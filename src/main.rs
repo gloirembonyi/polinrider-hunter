@@ -359,8 +359,27 @@ fn cmd_install(args: &Args, mut cfg: Config) -> i32 {
     );
 
     // Immediate sweep, so `install` actually cleans rather than only promising to.
+    //
+    // The git-ref audit is deliberately skipped here: it fetches every remote,
+    // which across a handful of repos takes minutes and makes a run-once-and-
+    // forget command look hung. The file sweep is what matters now, and the
+    // guard performs the ref audit on its own schedule shortly after.
     println!("\n{}", util::c(BOLD, "initial sweep"));
-    let code = daemon::run(&cfg, true);
+    let sweep = Config {
+        paths: cfg.paths.clone(),
+        git_interval: 0,
+        ..Config::default()
+    };
+    let code = daemon::run(&sweep, true);
+    if cfg.git_interval > 0 {
+        println!(
+            "{}",
+            util::c(
+                DIM,
+                "branch audit left to the guard; `polinrider-hunter repos` runs it now"
+            )
+        );
+    }
 
     if !args.has("--no-autostart") {
         match service::install_autostart(&exe) {
