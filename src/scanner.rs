@@ -202,8 +202,22 @@ fn disguised_font(path: &Path, data: &[u8]) -> bool {
     js.iter().filter(|m| find_lit_ci(data, m).is_some()).count() >= 2
 }
 
-/// Files this big are not hand-written config; skip them.
+/// Hard ceiling: nothing this large is read, whatever it is called.
 const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Ceiling for a file that is *not* one of PolinRider's target filenames.
+///
+/// The attack appends to a hand-maintained build config, and those are
+/// kilobytes. Anything past a megabyte is a bundle, a minified vendor blob or a
+/// lockfile - and reading a few hundred megabytes of editor-extension bundles,
+/// then running every indicator over each one, is what turned a machine-wide
+/// hunt from seconds into many minutes.
+///
+/// This is a deliberate, documented trade-off rather than a silent one: a
+/// payload appended to a multi-megabyte bundle would be missed. Target
+/// filenames are exempt from this cap and always read in full, up to
+/// `MAX_FILE_BYTES`.
+const MAX_INCIDENTAL_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct Finding {
@@ -365,6 +379,10 @@ pub fn scan_file(path: &Path) -> Option<Finding> {
     }
     let meta = std::fs::symlink_metadata(path).ok()?;
     if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
+        return None;
+    }
+    // Large files that are not a known target are not worth the read.
+    if meta.len() > MAX_INCIDENTAL_BYTES && !is_config_target(path) {
         return None;
     }
     let data = match std::fs::read(path) {
@@ -541,6 +559,12 @@ mod tests {
 
     fn hit(ioc: &'static str, sev: Severity) -> Hit {
         Hit { ioc, sev, why: "", start: 0, end: 1, line: 1 }
+    }
+
+    #[test]
+    fn size_caps_are_ordered_sensibly() {
+        // A target filename may be read well past the incidental cap.
+        assert!(MAX_INCIDENTAL_BYTES < MAX_FILE_BYTES);
     }
 
     #[test]

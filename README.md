@@ -200,6 +200,25 @@ in an order that matters:
 
 `--dry-run` shows what it would do and writes nothing.
 
+**How long it takes.** A first full hunt is minutes, not seconds — it is reading
+every candidate file under your home directory. It prints each directory as it
+enters it, so you can see where it is. Two things keep it bounded:
+
+- Operating-system, vendor and package-cache directories are skipped
+  (`.cargo`, `.npm`, `node_modules`, the Windows directory, and so on).
+- Files over 1 MB are skipped **unless** the filename is one PolinRider targets.
+  The attack appends to a hand-maintained build config, and those are kilobytes;
+  past a megabyte you are looking at a bundle or a lockfile. Reading a few
+  hundred megabytes of editor-extension bundles and running every indicator over
+  each was the difference between seconds and many minutes.
+
+  That is a real trade-off, stated rather than hidden: a payload appended to a
+  multi-megabyte bundle would be missed. Target filenames are exempt and always
+  read in full.
+
+Once the guard is installed you do not pay this cost again — its quick pass reads
+only the ~30 filenames PolinRider targets, and only when one of them changes.
+
 Exit codes: `0` clean, `1` something found, `2` bad usage.
 
 ### Auditing branches without pulling
