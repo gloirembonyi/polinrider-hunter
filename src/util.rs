@@ -170,6 +170,28 @@ pub fn run(program: &str, args: &[&str]) -> Output {
     }
 }
 
+/// Start a child and do not wait for it.
+///
+/// For work whose result we do not need and whose duration we do not control -
+/// a desktop notification helper that has to outlive the balloon it shows. The
+/// child is detached and windowless so nothing flashes on screen.
+pub fn spawn_detached(program: &str, args: &[&str]) -> bool {
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    hide_window(&mut cmd);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
+    }
+    cmd.spawn().is_ok()
+}
+
 /// Run `git` inside `repo`.
 pub fn git(repo: &std::path::Path, args: &[&str]) -> Output {
     let mut full: Vec<&str> = vec!["-C"];

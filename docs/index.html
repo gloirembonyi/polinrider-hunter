@@ -37,6 +37,7 @@
       <a href="#detection">Detection</a>
       <a href="#techniques">Coverage</a>
       <a href="#guard">The guard</a>
+      <a href="#watching">Watching</a>
       <a href="#commands">Commands</a>
       <a href="#install">Install</a>
       <a href="https://github.com/gloirembonyi/polinrider-hunter" rel="noopener">Source</a>
@@ -634,6 +635,97 @@ polinrider-hunter status</code></pre>
 </section>
 
 <!-- ---------------------------------------------------------------------- -->
+<section id="watching" class="reveal">
+  <div class="wrap">
+    <p class="eyebrow">Staying informed</p>
+    <h2>It tells you. You can watch it. You can remove it.</h2>
+    <p class="lede" style="margin-bottom:30px">
+      A guard that finds malware at two in the morning and only writes it to a log
+      file has not really told anybody.
+    </p>
+
+    <div class="grid grid--3" style="margin-bottom:26px">
+      <div class="panel">
+        <span class="step__num">NOTIFICATIONS</span>
+        <h3>You hear about it</h3>
+        <p class="small">
+          A desktop notification when something is cleaned, and a louder one when
+          something is found that will not be touched automatically. Tray balloon on
+          Windows, <code>osascript</code> on macOS, <code>notify-send</code> on Linux
+          — all already on those systems, nothing to install.
+        </p>
+        <p class="small muted">
+          Check they reach you: <code>polinrider-hunter test-notify</code>. Silence is
+          deliberate on a headless box or locked session — the log still has everything.
+        </p>
+      </div>
+
+      <div class="panel">
+        <span class="step__num">MONITORING</span>
+        <h3>You can watch it</h3>
+        <p class="small">
+          A Python dashboard — terminal or local web — showing guard health, memory and
+          priority, every watched path, a timeline of detections with the indicators
+          that fired, and the quarantine.
+        </p>
+        <p class="small muted">
+          Strictly read-only. It never edits config, heals anything or stops the guard.
+          The web view binds to localhost only: it shows where infections were found on
+          your disk.
+        </p>
+      </div>
+
+      <div class="panel">
+        <span class="step__num">REMOVAL</span>
+        <h3>You can get rid of it</h3>
+        <p class="small">
+          <code>uninstall</code> stops the guard and removes the hooks, reversibly, and
+          prints exactly what it removed. <code>uninstall --purge</code> also deletes the
+          state directory, the <code>PATH</code> entry and the binary itself.
+        </p>
+        <p class="small muted">
+          <code>--purge</code> warns first if the quarantine is not empty — those are the
+          only copies of what was cut out of your files.
+        </p>
+      </div>
+    </div>
+
+    <div class="grid grid--2">
+      <div>
+        <h3>The dashboard</h3>
+        <div class="code">
+          <pre><code><span class="c-cmt"># live terminal view</span>
+python tools/monitor.py
+
+<span class="c-cmt"># or a local web dashboard</span>
+python tools/monitor.py --web</code></pre>
+          <button class="copy" type="button" aria-label="Copy command"></button>
+        </div>
+        <p class="small muted" style="margin-top:12px">
+          Standard library only — no <code>pip install</code>. <code>--json</code> gives
+          the same snapshot for scripting.
+        </p>
+      </div>
+      <div>
+        <h3>Complete removal</h3>
+        <div class="code">
+          <pre><code><span class="c-cmt"># stop guarding, keep everything else</span>
+polinrider-hunter uninstall
+
+<span class="c-cmt"># leave nothing behind at all</span>
+polinrider-hunter uninstall --purge</code></pre>
+          <button class="copy" type="button" aria-label="Copy command"></button>
+        </div>
+        <p class="small muted" style="margin-top:12px">
+          A running binary cannot delete itself on Windows, so a detached helper waits
+          for it to exit and removes it.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------------- -->
 <section id="commands" class="reveal">
   <div class="wrap">
     <p class="eyebrow">Reference</p>
@@ -652,7 +744,9 @@ polinrider-hunter status</code></pre>
           <tr><td><code>procs</code></td><td>List hidden stage-2 processes. <code>--kill</code> stops them.</td></tr>
           <tr><td><code>protect</code> / <code>unprotect</code></td><td>Install or remove just the pre-commit hook.</td></tr>
           <tr><td><code>quarantine</code></td><td>List the originals kept aside during healing.</td></tr>
-          <tr><td><code>uninstall</code></td><td>Stop the guard and remove the hooks.</td></tr>
+          <tr><td><code>test-notify</code></td><td>Send a notification, to check they reach you on this machine.</td></tr>
+          <tr><td><code>uninstall</code></td><td>Stop the guard and remove the hooks. Reversible.</td></tr>
+          <tr><td><code>uninstall --purge</code></td><td>Also delete the state directory, the <code>PATH</code> entry and the binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -784,8 +878,28 @@ polinrider-hunter status</code></pre>
       <dt>How do I remove it?</dt>
       <dd>
         <code>polinrider-hunter uninstall</code> stops the guard and removes the hooks,
-        then delete the binary. Config, log and quarantine are left in place — say so and
-        delete that directory too; <code>status</code> prints the path.
+        and prints exactly what it took out. That is reversible — the binary and your
+        state directory stay. <code>polinrider-hunter uninstall --purge</code> goes
+        further: the state directory, the <code>PATH</code> entry and the binary itself.
+        It warns first if the quarantine still holds originals, since deleting those is
+        not recoverable.
+      </dd>
+
+      <dt>Will I know when it finds something?</dt>
+      <dd>
+        Yes — a desktop notification, using whatever the platform already provides. Run
+        <code>polinrider-hunter test-notify</code> to confirm they reach you before you
+        need them. If your desktop cannot show one (headless, locked session) it fails
+        quietly rather than refusing to run, and the log still records every detection.
+        Turn them off with <code>notify = false</code> in the config.
+      </dd>
+
+      <dt>Can I see what it is doing?</dt>
+      <dd>
+        <code>python tools/monitor.py</code> gives a live dashboard — guard health,
+        memory, watched paths, a timeline of detections, and the quarantine — in the
+        terminal or, with <code>--web</code>, at <code>127.0.0.1:8787</code>. It is
+        read-only and needs no packages installed.
       </dd>
     </dl>
   </div>

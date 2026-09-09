@@ -424,12 +424,22 @@ fn match_at(data: &[u8], i: usize, kind: Kind) -> Option<(usize, usize)> {
             }
         }
         Kind::CampaignId => {
-            if i + 7 <= data.len()
-                && data[i] == b'A'
-                && (data[i + 1] == b'8' || data[i + 1] == b'9')
-                && data[i + 2] == b'-'
-                && data[i + 3..i + 7].iter().all(|b| b.is_ascii_digit())
+            if i + 7 > data.len()
+                || data[i] != b'A'
+                || (data[i + 1] != b'8' && data[i + 1] != b'9')
+                || data[i + 2] != b'-'
+                || !data[i + 3..i + 7].iter().all(|b| b.is_ascii_digit())
             {
+                return None;
+            }
+            // The tag stands alone - `global.i = 'A8-2941'`. The same seven
+            // characters occur inside GUIDs and constant tables, where they are
+            // surrounded by more hex. Windows' own pscon.py and shellcon.py
+            // tripped this before the boundary check existed.
+            let boundary = |b: u8| !(b.is_ascii_hexdigit() || b == b'-' || b == b'_');
+            let before_ok = i == 0 || boundary(data[i - 1]);
+            let after_ok = i + 7 >= data.len() || boundary(data[i + 7]);
+            if before_ok && after_ok {
                 Some((i, i + 7))
             } else {
                 None
@@ -674,10 +684,20 @@ mod tests {
 
     #[test]
     fn campaign_ids() {
-        assert!(find_campaign_id(b"x A9-4221 y").is_some());
-        assert!(find_campaign_id(b"A8-2941").is_some());
-        assert!(find_campaign_id(b"A7-1234").is_none());
-        assert!(find_campaign_id(b"A9-12").is_none());
+        assert!(reports(b"global.i = 'A9-4221';", "campaign-id"));
+        assert!(reports(b"A8-2941", "campaign-id"));
+        assert!(!reports(b"A7-1234", "campaign-id"));
+        assert!(!reports(b"A9-12", "campaign-id"));
+    }
+
+    #[test]
+    fn campaign_ids_do_not_match_inside_guids() {
+        // Real constants from Windows headers that used to trip this.
+        assert!(!reports(b"{9E3A8-1234-4f6a-9c2d-000000000000}", "campaign-id"));
+        assert!(!reports(b"0xA8-1234abcd", "campaign-id"));
+        assert!(!reports(b"FFA8-2941FF", "campaign-id"));
+        // ...but a quoted tag still matches.
+        assert!(reports(b"\"A8-2941\"", "campaign-id"));
     }
 
     #[test]

@@ -92,6 +92,19 @@ pub fn heal(finding: &Finding, dry_run: bool) -> Outcome {
         return Outcome::Skipped("no critical indicator; review manually".into());
     }
 
+    // Documentation is not an infection.
+    //
+    // A file that *describes* PolinRider - an incident note, a security README,
+    // a blog draft - is full of its indicators by design. Cutting a line out of
+    // someone's notes because it quotes a payload would be a straightforward
+    // way to destroy the write-up of the very incident being cleaned up. Six of
+    // these turned up in a real sweep of a home directory.
+    if is_prose(path) {
+        return Outcome::Skipped(
+            "documentation: it quotes indicators rather than carrying them - left alone".into(),
+        );
+    }
+
     // Structured data cannot be repaired by splicing bytes.
     //
     // The byte-cut works because the payload is appended past the end of a line
@@ -184,6 +197,16 @@ pub fn heal(finding: &Finding, dry_run: bool) -> Outcome {
         return Outcome::Failed(format!("write: {e}"));
     }
     Outcome::Healed { removed }
+}
+
+/// Prose, where indicators are quotations rather than payload.
+fn is_prose(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    matches!(ext.as_str(), "md" | "markdown" | "txt" | "rst" | "adoc" | "org")
 }
 
 /// Is this a structured-data file, where a line-level cut risks corruption?

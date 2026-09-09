@@ -17,6 +17,8 @@ pub struct Config {
     pub auto_heal: bool,
     /// Kill hidden loader processes when we find them.
     pub kill_procs: bool,
+    /// Raise a desktop notification when something is found.
+    pub notify: bool,
 }
 
 impl Default for Config {
@@ -28,6 +30,7 @@ impl Default for Config {
             git_interval: 3600,
             auto_heal: true,
             kill_procs: true,
+            notify: true,
         }
     }
 }
@@ -133,6 +136,7 @@ impl Config {
                 "git_interval" => cfg.git_interval = v.parse().unwrap_or(cfg.git_interval),
                 "auto_heal" => cfg.auto_heal = parse_bool(v, cfg.auto_heal),
                 "kill_procs" => cfg.kill_procs = parse_bool(v, cfg.kill_procs),
+                "notify" => cfg.notify = parse_bool(v, cfg.notify),
                 _ => {}
             }
         }
@@ -153,6 +157,7 @@ impl Config {
         s.push_str(&format!("git_interval = {}\n", self.git_interval));
         s.push_str(&format!("auto_heal = {}\n", self.auto_heal));
         s.push_str(&format!("kill_procs = {}\n", self.kill_procs));
+        s.push_str(&format!("notify = {}\n", self.notify));
         std::fs::write(config_path(), s)
     }
 }

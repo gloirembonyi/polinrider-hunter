@@ -23,11 +23,21 @@ use std::time::{Duration, SystemTime};
 use crate::config::Config;
 use crate::healer;
 use crate::gitscan;
+use crate::notify;
 use crate::procscan;
 use crate::scanner;
 use crate::service;
 use crate::util;
 use crate::{config, report};
+
+/// "1 file" / "3 files" - a notification reading "Cleaned 1 files" looks broken.
+fn plural(n: usize, word: &str) -> String {
+    if n == 1 {
+        format!("{n} {word}")
+    } else {
+        format!("{n} {word}s")
+    }
+}
 
 fn mtime(p: &std::path::Path) -> Option<SystemTime> {
     std::fs::metadata(p).ok()?.modified().ok()
@@ -132,10 +142,26 @@ pub fn run(cfg: &Config, once: bool) -> i32 {
             out
         };
 
+        // Collected so the person gets one notification per cycle rather than
+        // one per file: five infected configs in a monorepo is one event to a
+        // human, not five.
+        let mut cleaned: Vec<String> = Vec::new();
+        let mut needs_you: Vec<String> = Vec::new();
+
         for f in &findings {
             let iocs: Vec<&str> = f.hits.iter().map(|h| h.ioc).collect();
             if f.is_critical() && cfg.auto_heal {
                 let outcome = healer::heal(f, false);
+                let name = f
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| f.path.display().to_string());
+                match &outcome {
+                    healer::Outcome::Healed { .. } | healer::Outcome::Deleted => cleaned.push(name),
+                    healer::Outcome::Failed(_) => needs_you.push(name),
+                    healer::Outcome::Skipped(_) => {}
+                }
                 if matches!(outcome, healer::Outcome::Healed { .. } | healer::Outcome::Deleted) {
                     total_healed += 1;
                     // Re-stage in git so the clean version is what gets committed.
@@ -164,6 +190,23 @@ pub fn run(cfg: &Config, once: bool) -> i32 {
             }
         }
 
+        if cfg.notify && !cleaned.is_empty() {
+            notify::send(
+                notify::Level::Removed,
+                &format!("Cleaned {}: {}", plural(cleaned.len(), "file"), cleaned.join(", ")),
+            );
+        }
+        if cfg.notify && !needs_you.is_empty() {
+            notify::send(
+                notify::Level::NeedsYou,
+                &format!(
+                    "Could not clean {} automatically: {}. Run `polinrider-hunter scan` for detail.",
+                    plural(needs_you.len(), "file"),
+                    needs_you.join(", ")
+                ),
+            );
+        }
+
         // ---- running stage-2 processes ---------------------------------------
         //
         // Only on the full cycle, not every quick pass. Enumerating command
@@ -173,6 +216,16 @@ pub fn run(cfg: &Config, once: bool) -> i32 {
         for s in if due_full { procscan::find() } else { Vec::new() } {
             if cfg.kill_procs {
                 let killed = procscan::kill(s.pid);
+                if killed && cfg.notify {
+                    notify::send(
+                        notify::Level::Removed,
+                        &format!(
+                            "Stopped a hidden PolinRider process (pid {}). It was already running \
+                             and would not have been caught by cleaning files alone.",
+                            s.pid
+                        ),
+                    );
+                }
                 util::log_line(
                     &log,
                     &format!(

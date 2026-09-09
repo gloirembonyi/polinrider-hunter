@@ -233,6 +233,80 @@ pub fn wait_for_daemon(interval: u64, secs: u64) -> bool {
     false
 }
 
+/// Stop a running guard, if there is one. Returns the pid it stopped.
+pub fn stop_daemon() -> Option<u32> {
+    let text = std::fs::read_to_string(config::heartbeat_path()).ok()?;
+    let pid: u32 = text.trim().split_whitespace().next()?.parse().ok()?;
+    if pid == std::process::id() || !pid_alive(pid) {
+        return None;
+    }
+    let pid_s = pid.to_string();
+    let ok = if cfg!(windows) {
+        util::run("taskkill", &["/F", "/PID", &pid_s]).ok
+    } else {
+        util::run("kill", &["-TERM", &pid_s]).ok
+    };
+    let _ = std::fs::remove_file(config::heartbeat_path());
+    if ok {
+        Some(pid)
+    } else {
+        None
+    }
+}
+
+/// Take the install directory back off the user's PATH.
+///
+/// Windows only, and deliberately: there, PATH is a registry value this process
+/// can edit precisely. On Unix it lives in whichever shell profile the person
+/// hand-edited, and a program that rewrites someone's `.zshrc` unasked is worse
+/// than one that tells them which line to delete.
+pub fn remove_from_path(dir: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let target = dir.to_string_lossy().to_string();
+        let script = format!(
+            "$p = [Environment]::GetEnvironmentVariable('Path','User'); \
+             $keep = ($p -split ';' | Where-Object {{ $_ -and $_.TrimEnd('\\') -ne '{}' }}) -join ';'; \
+             if ($keep -ne $p) {{ [Environment]::SetEnvironmentVariable('Path', $keep, 'User'); 'removed' }} else {{ 'absent' }}",
+            target.trim_end_matches('\\').replace('\'', "''")
+        );
+        let out = util::run(
+            "powershell",
+            &["-NoProfile", "-NonInteractive", "-Command", &script],
+        );
+        return out.ok && out.stdout.contains("removed");
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = dir;
+        false
+    }
+}
+
+/// Delete the binary that is currently executing.
+///
+/// A running executable cannot delete itself on Windows, so a detached helper
+/// waits for this process to exit and then removes it. Elsewhere the file can
+/// simply be unlinked while it runs.
+pub fn remove_self(exe: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let path = exe.to_string_lossy().to_string();
+        let dir = exe.parent().map(|p| p.to_string_lossy().to_string());
+        // ping is the portable "sleep" available on every Windows install.
+        let mut cmd = format!("ping 127.0.0.1 -n 3 >nul & del /f /q \"{path}\"");
+        if let Some(d) = dir {
+            // Remove the install directory too, but only if it empties.
+            cmd.push_str(&format!(" & rmdir \"{d}\" 2>nul"));
+        }
+        return util::spawn_detached("cmd", &["/c", &cmd]);
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::remove_file(exe).is_ok()
+    }
+}
+
 pub fn write_heartbeat() {
     let p = config::heartbeat_path();
     if let Some(parent) = p.parent() {

@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use polinrider_hunter::{
-    config, daemon, gitscan, healer, procscan, report, scanner, service, util,
+    config, daemon, gitscan, healer, notify, procscan, report, scanner, service, util,
 };
 
 use config::Config;
@@ -82,7 +82,8 @@ fn main() {
         "procs" => cmd_procs(&args),
         "daemon" => daemon::run(&cfg, args.has("--once")),
         "install" => cmd_install(&args, cfg),
-        "uninstall" => cmd_uninstall(),
+        "uninstall" => cmd_uninstall(&args),
+        "test-notify" => cmd_test_notify(),
         "status" => cmd_status(&cfg),
         "quarantine" => cmd_quarantine(),
         "hook" => cmd_hook(),
@@ -578,31 +579,155 @@ fn cmd_install(args: &Args, mut cfg: Config) -> i32 {
     code
 }
 
-fn cmd_uninstall() -> i32 {
-    match service::uninstall_autostart() {
-        Ok(true) => println!("{}", util::c(GREEN, "autostart removed")),
-        Ok(false) => println!("{}", util::c(DIM, "autostart was not installed")),
-        Err(e) => eprintln!("could not remove autostart: {e}"),
-    }
-    let cfg = Config::load();
-    for p in &cfg.paths {
-        if let Some(root) = gitscan::repo_root(p) {
-            let _ = gitscan::uninstall_hook(&root);
-        }
-    }
+/// Send a notification, so you can see whether they reach you on this machine.
+fn cmd_test_notify() -> i32 {
+    println!("{}", util::c(DIM, "sending a test notification..."));
+    notify::send(
+        notify::Level::Removed,
+        "This is a test. If you can read this, polinrider-hunter can reach you when it finds something.",
+    );
     println!(
-        "{}",
+        "  {}",
         util::c(
             DIM,
-            &format!(
-                "config, log and quarantine kept in {} - delete it by hand if you want them gone",
-                config::home().display()
-            )
+            "sent. Nothing on screen? Check your notification settings, or set\n  \
+             `notify = false` in the config - the log records every detection regardless."
         )
     );
     0
 }
 
+fn cmd_uninstall(args: &Args) -> i32 {
+    let purge = args.has("--purge") || args.has("--all");
+    let mut removed: Vec<String> = Vec::new();
+    let mut kept: Vec<String> = Vec::new();
+
+    // Stop the guard first, before removing anything it might rewrite.
+    match service::stop_daemon() {
+        Some(pid) => removed.push(format!("stopped the guard (pid {pid})")),
+        None => kept.push("guard was not running".into()),
+    }
+
+    match service::uninstall_autostart() {
+        Ok(true) => removed.push(format!(
+            "autostart entry ({})",
+            service::autostart_path().display()
+        )),
+        Ok(false) => kept.push("autostart was not installed".into()),
+        Err(e) => kept.push(format!("could not remove autostart: {e}")),
+    }
+
+    let cfg = Config::load();
+    let mut hooks = 0;
+    for p in &cfg.paths {
+        if let Some(root) = gitscan::repo_root(p) {
+            if gitscan::uninstall_hook(&root).unwrap_or(false) {
+                hooks += 1;
+            }
+        }
+    }
+    if hooks > 0 {
+        removed.push(format!("pre-commit hook from {hooks} repo(s)"));
+    } else {
+        kept.push("no pre-commit hooks to remove".into());
+    }
+
+    if !purge {
+        report_uninstall(&removed, &kept);
+        println!(
+            "\n{}",
+            util::c(
+                DIM,
+                &format!(
+                    "The binary, and the config/log/quarantine in {}, are still here.\n\
+                     Remove everything with: polinrider-hunter uninstall --purge",
+                    config::home().display()
+                )
+            )
+        );
+        return 0;
+    }
+
+    // ---- --purge: leave nothing behind ------------------------------------
+    let home = config::home();
+    let exe = config::exe_path();
+
+    // The quarantine holds the only copies of what was cut out of your files.
+    // Destroying that silently would be the wrong kind of thorough.
+    let quarantined = std::fs::read_dir(config::quarantine_dir())
+        .map(|d| d.flatten().filter(|e| e.path().is_file()).count())
+        .unwrap_or(0);
+    if quarantined > 0 {
+        println!(
+            "{}",
+            util::c(
+                YELLOW,
+                &format!(
+                    "  note: deleting {quarantined} quarantined original(s) - the only copies of\n  \
+                     what was removed from your files"
+                )
+            )
+        );
+    }
+
+    match std::fs::remove_dir_all(&home) {
+        Ok(()) => removed.push(format!("state directory ({})", home.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            kept.push("no state directory".into())
+        }
+        Err(e) => kept.push(format!("could not remove {}: {e}", home.display())),
+    }
+
+    if let Some(dir) = exe.parent() {
+        if service::remove_from_path(dir) {
+            removed.push("PATH entry".into());
+        } else if cfg!(windows) {
+            kept.push("PATH entry was not present".into());
+        } else {
+            kept.push(format!(
+                "PATH: remove `export PATH=\"$PATH:{}\"` from your shell profile by hand",
+                dir.display()
+            ));
+        }
+    }
+
+    report_uninstall(&removed, &kept);
+
+    if service::remove_self(&exe) {
+        println!(
+            "\n{} {}",
+            util::c(GREEN, "gone."),
+            util::c(
+                DIM,
+                &format!("({} removes itself in a moment)", exe.display())
+            )
+        );
+    } else {
+        println!(
+            "\n{}",
+            util::c(
+                YELLOW,
+                &format!("delete the binary yourself: {}", exe.display())
+            )
+        );
+    }
+    0
+}
+
+fn report_uninstall(removed: &[String], kept: &[String]) {
+    if !removed.is_empty() {
+        println!("{}", util::c(BOLD, "removed"));
+        for r in removed {
+            println!("  {} {r}", util::c(GREEN, "-"));
+        }
+    }
+    if !kept.is_empty() {
+        println!("{}", util::c(DIM, "nothing to do"));
+        for k in kept {
+            println!("  {}", util::c(DIM, &format!("- {k}")));
+        }
+    }
+}
 fn cmd_status(cfg: &Config) -> i32 {
     println!("{}", util::c(BOLD, &format!("polinrider-hunter {VERSION}")));
     println!("  home         {}", config::home().display());
@@ -736,7 +861,9 @@ Detects and removes the PolinRider supply-chain malware.
                          pre-commit hook, sweep them now, and start a background
                          guard that keeps doing it at every login. Run once.
   status                 Where everything lives and whether the guard is alive.
-  uninstall              Stop the guard and remove the hooks.
+  uninstall              Stop the guard and remove the hooks. --purge also
+                         deletes the state directory, PATH entry and binary.
+  test-notify            Send a notification, to check they reach you.
 
 {b}ON DEMAND{r}
   scan [paths...]        Report indicators; change nothing. Exit 1 if infected.

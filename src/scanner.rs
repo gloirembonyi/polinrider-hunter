@@ -96,6 +96,20 @@ const SKIP_SYSTEM_DIRS: &[&str] = &[
     ".sbt",
 ];
 
+/// Is this path inside our own state directory?
+///
+/// The quarantine holds the *originals* of what we removed, so every file in it
+/// still matches. Scanning it means healing a quarantined copy, quarantining a
+/// copy of that first, and doing it again next pass - which is exactly what
+/// happened: 6,561 files, each a slightly longer filename than the last, until
+/// somebody looked. Nothing under the state directory is ever a target.
+pub fn is_own_state(path: &Path) -> bool {
+    use std::sync::OnceLock;
+    static HOME: OnceLock<PathBuf> = OnceLock::new();
+    let home = HOME.get_or_init(crate::config::home);
+    path.starts_with(home)
+}
+
 /// Should the walker skip a directory with this name?
 pub fn skip_dir(name: &str) -> bool {
     SKIP_DIRS.contains(&name) || SKIP_SYSTEM_DIRS.contains(&name)
@@ -429,7 +443,7 @@ fn refine(path: &Path, mut hits: Vec<Hit>) -> Vec<Hit> {
 
 /// Read a file and match it. `None` when the file should not be considered.
 pub fn scan_file(path: &Path) -> Option<Finding> {
-    if is_known_detector(path) {
+    if is_known_detector(path) || is_own_state(path) {
         return None;
     }
     let meta = std::fs::symlink_metadata(path).ok()?;
@@ -578,7 +592,7 @@ pub fn scan_tree_cb(root: &Path, quick: bool, on_finding: &mut dyn FnMut(Finding
                 }
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
-                if skip_dir(&name) {
+                if skip_dir(&name) || is_own_state(&path) {
                     continue;
                 }
                 stack.push(path);
@@ -631,7 +645,7 @@ pub fn find_target_files(root: &Path) -> Vec<PathBuf> {
                     continue;
                 }
                 let name = entry.file_name();
-                if !skip_dir(&name.to_string_lossy()) {
+                if !skip_dir(&name.to_string_lossy()) && !is_own_state(&path) {
                     stack.push(path);
                 }
             } else if meta.is_file() && is_config_target(&path) {
@@ -654,6 +668,16 @@ pub fn scan_paths(roots: &[PathBuf], quick: bool) -> Vec<Finding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn our_own_state_directory_is_never_scanned() {
+        // Guards against re-quarantining the quarantine, which compounds every
+        // pass until the directory has thousands of files in it.
+        let home = crate::config::home();
+        assert!(is_own_state(&home.join("quarantine").join("anything.mjs")));
+        assert!(is_own_state(&home.join("hunter.log")));
+        assert!(!is_own_state(Path::new("/some/project/postcss.config.mjs")));
+    }
 
     #[test]
     fn config_targets_match_by_name_and_suffix() {
