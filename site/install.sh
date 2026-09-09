@@ -19,7 +19,7 @@ set -eu
 # ---------------------------------------------------------------------------
 SITE="${POLINRIDER_SITE:-https://polinrider-hunter.vercel.app}"
 SITE="${SITE%/}"
-REPO="${POLINRIDER_REPO:-}"
+REPO="${POLINRIDER_REPO:-gloirembonyi/polinrider-hunter}"
 
 # Set either of these to 1 to stop after installing the binary. Useful in CI, and
 # for anyone who wants the tool on PATH without it sweeping or starting a guard.

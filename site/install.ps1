@@ -25,7 +25,7 @@ $Site = if ($env:POLINRIDER_SITE) { $env:POLINRIDER_SITE.TrimEnd('/') } else { '
 # for anyone who wants the tool on PATH without it sweeping or starting a guard.
 $SkipHunt  = $env:POLINRIDER_NO_HUNT -eq '1'
 $SkipGuard = $env:POLINRIDER_NO_INSTALL -eq '1'
-$Repo = if ($env:POLINRIDER_REPO) { $env:POLINRIDER_REPO } else { '' }
+$Repo = if ($env:POLINRIDER_REPO) { $env:POLINRIDER_REPO } else { 'gloirembonyi/polinrider-hunter' }
 
 $Asset      = 'polinrider-hunter-windows-x86_64.exe'
 $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\polinrider-hunter'

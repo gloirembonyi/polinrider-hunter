@@ -42,7 +42,7 @@ Environment overrides:
 | | |
 |---|---|
 | `POLINRIDER_SITE` | where to fetch the binary from (default: the deployed site) |
-| `POLINRIDER_REPO` | `owner/repo`, to enable the release and source-build paths |
+| `POLINRIDER_REPO` | `owner/repo` for the release and source-build paths (default: `gloirembonyi/polinrider-hunter`) |
 | `POLINRIDER_NO_HUNT=1` | install the binary but skip the initial sweep |
 | `POLINRIDER_NO_INSTALL=1` | install the binary but do not start the guard |
 | `POLINRIDER_BIN` | install directory (unix; default `~/.local/bin`) |

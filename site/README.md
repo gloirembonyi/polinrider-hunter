@@ -102,8 +102,8 @@ cp target/release/polinrider-hunter site/bin/polinrider-hunter-linux-x86_64
 ```
 
 Until then `install.sh` builds from source, which takes about a minute and needs
-`cargo` — it says so plainly rather than failing. Set `POLINRIDER_REPO` to
-`owner/repo` if you want the source-build and GitHub-release paths to work.
+`cargo` — it says so plainly rather than failing. The source-build and release fallbacks default to
+[`gloirembonyi/polinrider-hunter`](https://github.com/gloirembonyi/polinrider-hunter); override with `POLINRIDER_REPO`.
 
 ### Keeping the binary in step with the code
 
