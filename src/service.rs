@@ -147,18 +147,65 @@ pub fn spawn_daemon(exe: &Path) -> std::io::Result<u32> {
     Ok(child.id())
 }
 
-/// Is a daemon alive? Judged by heartbeat freshness, which needs no platform
-/// process API and cannot be fooled by PID reuse.
+/// Is a daemon alive? Returns the heartbeat age when so.
+///
+/// Freshness alone is not enough. Kill a daemon and its last heartbeat stays on
+/// disk looking recent, which locks out a replacement for the whole grace
+/// window - and worse, makes `install` report a guard that is not there. So we
+/// require both: a recent beat *and* the process that wrote it still running.
 pub fn daemon_alive(interval: u64) -> Option<u64> {
     let text = std::fs::read_to_string(config::heartbeat_path()).ok()?;
-    let beat: u64 = text.trim().split_whitespace().last()?.parse().ok()?;
+    let mut parts = text.trim().split_whitespace();
+    let pid: u32 = parts.next()?.parse().ok()?;
+    let beat: u64 = parts.next()?.parse().ok()?;
     let age = util::now_secs().saturating_sub(beat);
-    // Allow three missed beats before calling it dead.
-    if age <= interval.saturating_mul(3).max(90) {
+    // Allow three missed beats before calling it stale.
+    if age > interval.saturating_mul(3).max(90) {
+        return None;
+    }
+    // Our own process does not count as "another daemon".
+    if pid == std::process::id() {
+        return Some(age);
+    }
+    if pid_alive(pid) {
         Some(age)
     } else {
         None
     }
+}
+
+/// Is a process id currently running? Shelled out, to stay dependency-free.
+pub fn pid_alive(pid: u32) -> bool {
+    let pid_s = pid.to_string();
+    #[cfg(windows)]
+    {
+        let out = util::run(
+            "tasklist",
+            &["/FI", &format!("PID eq {pid_s}"), "/NH", "/FO", "CSV"],
+        );
+        // No match prints an INFO line rather than the row, so look for the id.
+        out.ok && out.stdout.contains(&pid_s)
+    }
+    #[cfg(not(windows))]
+    {
+        // `kill -0` signals nothing; it just reports whether we could.
+        util::run("kill", &["-0", &pid_s]).ok
+    }
+}
+
+/// Wait briefly for a freshly spawned daemon to publish a heartbeat.
+///
+/// `spawn` succeeding only means the process started, not that it stayed up -
+/// it may exit immediately because another instance holds the lock. Claiming
+/// "guard running" without checking is how you end up with no guard at all.
+pub fn wait_for_daemon(interval: u64, secs: u64) -> bool {
+    for _ in 0..(secs * 4) {
+        if daemon_alive(interval).is_some() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    false
 }
 
 pub fn write_heartbeat() {

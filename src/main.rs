@@ -372,10 +372,20 @@ fn cmd_install(args: &Args, mut cfg: Config) -> i32 {
             Err(e) => eprintln!("could not register autostart: {e}"),
         }
         match service::spawn_daemon(&exe) {
-            Ok(pid) => println!(
-                "{} pid {pid}",
-                util::c(GREEN, "guard running in background,")
-            ),
+            Ok(pid) => {
+                // Confirm it stayed up rather than trusting spawn().
+                if service::wait_for_daemon(cfg.interval, 5) {
+                    println!("{} pid {pid}", util::c(GREEN, "guard running in background,"));
+                } else {
+                    println!(
+                        "{}",
+                        util::c(
+                            YELLOW,
+                            "guard did not report in; start it with `polinrider-hunter daemon`                              and check the log"
+                        )
+                    );
+                }
+            }
             Err(e) => eprintln!("could not start the guard: {e}"),
         }
     }
@@ -485,22 +495,30 @@ fn cmd_hook() -> i32 {
         match outcome {
             healer::Outcome::Healed { removed } => {
                 println!(
-                    "{RED}PolinRider{RESET} removed from {} (-{removed} bytes) - re-staged",
+                    "{} removed from {} (-{removed} bytes) - re-staged",
+                    util::c(RED, "PolinRider"),
                     f.path.display()
                 );
                 gitscan::stage(&root, &f.path);
             }
             healer::Outcome::Deleted => {
                 println!(
-                    "{RED}PolinRider{RESET} dropper {} deleted and untracked",
+                    "{} dropper {} deleted and untracked",
+                    util::c(RED, "PolinRider"),
                     f.path.display()
                 );
             }
             other => {
                 eprintln!(
-                    "{RED}PolinRider present in {} and not auto-cleanable: {}{RESET}",
-                    f.path.display(),
-                    other.label()
+                    "{}",
+                    util::c(
+                        RED,
+                        &format!(
+                            "PolinRider present in {} and not auto-cleanable: {}",
+                            f.path.display(),
+                            other.label()
+                        )
+                    )
                 );
                 blocked = true;
             }
