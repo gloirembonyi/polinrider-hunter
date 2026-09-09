@@ -287,6 +287,68 @@ fn a_genuine_webfont_is_not_touched() {
 }
 
 // ---------------------------------------------------------------------------
+// Shape 4: the VS Code autorun variant
+// ---------------------------------------------------------------------------
+
+#[test]
+fn autorun_tasks_json_is_reported_but_never_silently_rewritten() {
+    let sb = Sandbox::new("tasks-autorun");
+    // The arming half of the autorun variant: a task that fires on folderOpen
+    // and runs the payload that is disguised as a webfont.
+    let body = br#"{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "fonts",
+      "type": "shell",
+      "command": "node ./public/fonts/fa-solid-400.woff2",
+      "runOptions": { "runOn": "folderOpen" }
+    }
+  ]
+}
+"#;
+    let p = sb.write(".vscode/tasks.json", body);
+
+    let finding = scanner::scan_file(&p).expect("must be flagged");
+    assert!(finding.is_critical(), "the font-payload command is unambiguous");
+
+    // Editing JSON by splicing bytes would risk corrupting a real config, so
+    // the healer must decline and say so rather than guess.
+    let outcome = healer::heal(&finding, false);
+    assert!(
+        matches!(outcome, healer::Outcome::Failed(_) | healer::Outcome::Skipped(_)),
+        "must not auto-edit tasks.json, got {}",
+        outcome.label()
+    );
+    assert_eq!(
+        sb.read(&p),
+        body.to_vec(),
+        "the file must be left exactly as it was for the user to fix"
+    );
+}
+
+#[test]
+fn a_reinfected_config_is_cleaned_completely() {
+    let sb = Sandbox::new("reinfected");
+    // Two visits, two pads, two payloads.
+    let mut body = b"module.exports = { plugins: [] };".to_vec();
+    body.extend(pad(320, false));
+    body.extend_from_slice(b"global.i = 'A8-1111';first()\n");
+    body.extend_from_slice(b"const keep = true;");
+    body.extend(pad(320, true));
+    body.extend_from_slice(b"global['!']='8-2';var _$_1e42=4573868;\n");
+    let p = sb.write("tailwind.config.js", &body);
+
+    assert_healed(&clean_one(&p));
+    let after = String::from_utf8(sb.read(&p)).unwrap();
+    assert!(!signatures::has_critical(after.as_bytes()), "still dirty:\n{after}");
+    assert!(after.contains("module.exports = { plugins: [] };"));
+    assert!(after.contains("const keep = true;"));
+    // A second pass has nothing left to do.
+    assert!(scanner::scan_file(&p).is_none());
+}
+
+// ---------------------------------------------------------------------------
 // Directory-level behaviour: does a sweep find everything at once?
 // ---------------------------------------------------------------------------
 

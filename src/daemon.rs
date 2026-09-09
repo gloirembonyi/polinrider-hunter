@@ -2,10 +2,11 @@
 //!
 //! Three cadences, because the cheap check is the one worth running often:
 //!
-//! * **quick** (default 30s) — stat and read only the ~30 filenames PolinRider
-//!   actually writes to, and only when their mtime moved. This is what catches
-//!   a fresh infection within half a minute of it landing, and it costs
-//!   essentially nothing.
+//! * **quick** (default 30s) — `stat` a precomputed list of concrete target
+//!   paths, and read one only when its mtime has moved. No directory walking at
+//!   all: an earlier version re-walked every watched repository twice a minute,
+//!   which is thousands of directory reads for nothing and the reason this felt
+//!   heavy. Catches a fresh infection within half a minute at near-zero cost.
 //! * **full** (default 15m) — walk the watched trees properly, in case a
 //!   variant picks a filename we have not seen before.
 //! * **git** (default 1h) — fetch and audit every ref, reporting anything that
@@ -70,7 +71,15 @@ pub fn run(cfg: &Config, once: bool) -> i32 {
         );
     }
 
+    // Lower our own priority: a guard must never compete with the work the
+    // person is actually doing. One shell-out at startup, then never again.
+    if !once {
+        service::lower_priority();
+    }
+
     let mut seen: HashMap<PathBuf, SystemTime> = HashMap::new();
+    // Concrete paths the quick pass stats. Rebuilt on each full cycle.
+    let mut watch: Vec<PathBuf> = Vec::new();
     let mut last_full = 0u64;
     let mut last_git = 0u64;
     let mut total_healed = 0usize;
@@ -83,21 +92,41 @@ pub fn run(cfg: &Config, once: bool) -> i32 {
         let due_full = once || now.saturating_sub(last_full) >= cfg.full_interval;
         let findings = if due_full {
             last_full = now;
+            // Refresh the watch list: the fixed candidate paths plus whatever
+            // the walk turns up somewhere unexpected.
+            watch.clear();
+            for r in &cfg.paths {
+                watch.extend(scanner::direct_target_paths(r));
+                watch.extend(scanner::find_target_files(r));
+            }
+            watch.sort();
+            watch.dedup();
+            // Drop mtimes for paths no longer watched, so `seen` cannot grow
+            // without bound over a long-running process.
+            seen.retain(|p, _| watch.binary_search(p).is_ok());
+            // Record current mtimes now. The full scan below has already read
+            // these files, so without this the very next quick pass would
+            // consider every one of them "changed" and read them all again.
+            for p in &watch {
+                if let Some(m) = mtime(p) {
+                    seen.insert(p.clone(), m);
+                }
+            }
             scanner::scan_paths(&cfg.paths, false)
         } else {
-            // Only look at targets whose mtime changed since we last saw them.
+            // Pure stat pass: read a file only when it has actually changed.
             let mut out = Vec::new();
-            for f in scanner::scan_paths(&cfg.paths, true) {
-                let m = mtime(&f.path);
-                let changed = match (seen.get(&f.path), m) {
-                    (Some(prev), Some(cur)) => cur > *prev,
-                    _ => true,
+            for p in &watch {
+                let Some(m) = mtime(p) else {
+                    seen.remove(p);
+                    continue;
                 };
+                let changed = seen.get(p).map(|prev| m > *prev).unwrap_or(true);
                 if changed {
-                    if let Some(cur) = m {
-                        seen.insert(f.path.clone(), cur);
+                    seen.insert(p.clone(), m);
+                    if let Some(f) = scanner::scan_file(p) {
+                        out.push(f);
                     }
-                    out.push(f);
                 }
             }
             out

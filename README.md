@@ -156,6 +156,61 @@ contains; a real `.env` that merely picked up the key is never destroyed.
 
 ---
 
+## Every technique, and what happens to it
+
+| PolinRider technique | Detected by | Removal |
+|---|---|---|
+| Payload appended to a build config behind ~500 chars of space/tab padding (`postcss.config.mjs`, `tailwind.config.js`, `eslint.config.mjs`, `vite.config.ts`, `nest-cli.json`) | signatures + the padding heuristic | cut from the start of the pad to end of line, byte-exact |
+| The same, re-applied several times (reinfection) | as above | cut repeatedly until the file is clean; a second pass must find nothing |
+| Injected `createRequire` shim that manufactures `require()` for an ESM config | correlated with the payload | removed with the payload, but only when nothing else uses `require` |
+| `global.i = '...'` written **with spaces**, tab padding | `global\.i\s*=`, and the padding heuristic regardless of spelling | as above |
+| Obfuscated variant: `global['!']`, `_$_1e42` shuffle decoder, modulus `4573868` | signatures | as above |
+| Ethereum dead-drop C2 (`0xa322…`, public RPC hosts, `eth_getBlockByNumber`) | signatures; RPC hosts are corroborating-only | n/a — evidence, not a payload |
+| Stage-2 fetch over plain HTTP on port 443, `X-Payload-B64`, `/0x/cls`, `/0x/ls` | signatures | as above |
+| NestJS `src/main.ts` dropper: injected `import 'dotenv/config'` + `(async () => { atob(AUTH_API_KEY) … eval })();` | signatures | the IIFE block and the injected import are excised; the bootstrap either side is untouched |
+| Dropped `.env` carrying only `AUTH_API_KEY` | signatures | file deleted and untracked from git — but only if the key is essentially all it holds |
+| Payload disguised as a webfont (`public/fonts/*.woff2` that is really JavaScript) | font magic bytes vs. extension | file deleted |
+| `.vscode/tasks.json` auto-running the payload on `folderOpen` | signatures (`node ./public/fonts`) | **reported, never auto-edited** — splicing JSON would corrupt it, so it names the entry for you to delete |
+| `task.allowAutomaticTasks` arming that task | value-aware check | reported; `"off"` is the hardened setting and is never flagged |
+| Config re-saved as **UTF-16** to slip past NUL-based "binary" checks | BOM detected and the text decoded | reported; automatic removal disabled, because the offsets belong to the decoded text |
+| Hidden, detached stage 2 (`node -e` with `windowsHide`, `detached`, `.unref()`) | its command line carries the stage-2 globals | process terminated |
+
+Anything the tool will not clean automatically is reported with the reason,
+rather than guessed at. Two of those decisions — JSON and UTF-16 — exist because
+a byte-level cut is the right tool for an appended payload and the wrong tool for
+structured or wide-character text. There are tests holding both lines.
+
+---
+
+## Resource use
+
+Measured on the machine it was built on, guarding seven repositories:
+
+| | |
+|---|---|
+| Quick pass (every 30s) | **0.020s CPU**, no directory walking at all |
+| Full pass (every 15m) | ~1.3s CPU |
+| Resident memory | **4.7 MB** |
+| Priority | **BelowNormal** — it yields to whatever you are doing |
+
+Three things get it there:
+
+- **The quick pass never walks.** It `stat`s a precomputed list of concrete
+  target paths and reads a file only when its mtime has actually moved. An
+  earlier version re-walked every repository twice a minute — thousands of
+  directory reads to discover nothing had changed.
+- **One indexed pass, not twenty-five.** Each indicator is bucketed by the byte
+  it can start on, so at any position only the one or two that could match are
+  tested. It used to run a separate full search per indicator.
+- **Exemption checks come last.** Deciding "is this file a scanner rather than
+  malware?" costs ten full searches, so it now runs only when there is a hit to
+  suppress. Clean files — almost all of them — cost exactly one pass.
+
+Together those took a sweep of a JavaScript-heavy tree (1,768 candidate files)
+from **66.8s to 1.6s**, a 40x improvement, with identical results.
+
+---
+
 ## Commands
 
 ```
@@ -287,7 +342,7 @@ with `path` repeating once per directory.
 
 ```
 cargo build --release      # target/release/polinrider-hunter
-cargo test                 # 44 unit + 14 end-to-end tests
+cargo test                 # 56 unit + 16 end-to-end tests
 ```
 
 The end-to-end suite in `tests/` is the one worth reading. It plants each real

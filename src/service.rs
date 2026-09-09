@@ -174,6 +174,31 @@ pub fn daemon_alive(interval: u64) -> Option<u64> {
     }
 }
 
+/// Drop this process to a background priority.
+///
+/// Setting your own priority class needs a platform API call, and this crate
+/// carries no dependencies - so it is one shell-out, once, at daemon startup.
+/// Worth it: a scanner that makes the machine feel slow gets uninstalled, and
+/// at below-normal priority the guard yields to everything the user is doing
+/// while still finishing its work promptly on an idle core.
+pub fn lower_priority() {
+    let pid = std::process::id();
+    #[cfg(windows)]
+    {
+        let script = format!(
+            "try {{ (Get-Process -Id {pid}).PriorityClass = 'BelowNormal' }} catch {{}}"
+        );
+        let _ = util::run(
+            "powershell",
+            &["-NoProfile", "-NonInteractive", "-Command", &script],
+        );
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = util::run("renice", &["-n", "10", "-p", &pid.to_string()]);
+    }
+}
+
 /// Is a process id currently running? Shelled out, to stay dependency-free.
 pub fn pid_alive(pid: u32) -> bool {
     let pid_s = pid.to_string();

@@ -92,6 +92,24 @@ pub fn heal(finding: &Finding, dry_run: bool) -> Outcome {
         return Outcome::Skipped("no critical indicator; review manually".into());
     }
 
+    // Structured data cannot be repaired by splicing bytes.
+    //
+    // The byte-cut works because the payload is appended past the end of a line
+    // of real code. Inside a JSON or YAML document an indicator can sit in the
+    // middle of a value - the autorun variant puts `node ./public/fonts/...`
+    // inside a task's "command" - and cutting to end of line there leaves a
+    // dangling `"command": "` and an unparseable file. Only the appended-pad
+    // shape is safe here, and that always brings a `padding-run` hit with it.
+    if is_structured(path)
+        && !finding.hits.iter().any(|h| h.ioc == signatures::PADDING_IOC)
+    {
+        return Outcome::Failed(
+            "structured config (JSON/YAML): removing this by hand is safer than \
+             splicing it - delete the offending entry yourself"
+                .into(),
+        );
+    }
+
     // Padding alone is strong evidence but not proof. Only act on it inside a
     // file PolinRider is known to write to; elsewhere a human should look.
     // Offsets from a UTF-16 decode do not map back to file bytes.
@@ -168,6 +186,17 @@ pub fn heal(finding: &Finding, dry_run: bool) -> Outcome {
     Outcome::Healed { removed }
 }
 
+/// Is this a structured-data file, where a line-level cut risks corruption?
+fn is_structured(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|s| s.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("json") | Some("jsonc") | Some("yml") | Some("yaml") | Some("toml")
+    )
+}
+
 /// `.env` files that hold the loader's key and nothing of value.
 fn is_malicious_env(path: &Path, data: &[u8]) -> bool {
     let is_env = path
@@ -212,6 +241,32 @@ fn untrack_from_git(path: &Path) {
 ///
 /// Public so the test suite and `verify` can exercise it directly.
 pub fn strip(data: &[u8]) -> Option<Vec<u8>> {
+    // One file can carry more than one payload - a config that has been
+    // reinfected several times ends up with a pad-and-payload per visit. Cutting
+    // once and declaring victory leaves the rest in place, so keep going until
+    // the file is genuinely clean or we stop making progress.
+    let mut cur: Vec<u8> = data.to_vec();
+    let mut cut_any = false;
+    for _ in 0..16 {
+        if !signatures::has_critical(&cur) {
+            break;
+        }
+        let Some(next) = strip_once(&cur) else { break };
+        if next.len() >= cur.len() {
+            break; // no progress; do not spin
+        }
+        cur = next;
+        cut_any = true;
+    }
+    if !cut_any {
+        return None;
+    }
+    remove_dead_create_require(&mut cur);
+    Some(cur)
+}
+
+/// Remove one payload.
+fn strip_once(data: &[u8]) -> Option<Vec<u8>> {
     // Shape 1: the NestJS dropper — an injected `import 'dotenv/config'` plus a
     // self-invoking async block that decodes a URL, fetches code and evals it.
     if let Some(out) = strip_iife_dropper(data) {
@@ -219,9 +274,7 @@ pub fn strip(data: &[u8]) -> Option<Vec<u8>> {
     }
     // Shape 2: everything else seen so far — one line of legitimate code, a long
     // whitespace pad, then the payload out to end of line.
-    let mut out = strip_padded_tail(data)?;
-    remove_dead_create_require(&mut out);
-    Some(out)
+    strip_padded_tail(data)
 }
 
 /// Remove an injected `createRequire` shim once nothing uses `require` any more.
@@ -285,8 +338,12 @@ fn strip_iife_dropper(data: &[u8]) -> Option<Vec<u8>> {
     let markers: [&[u8]; 3] = [b"AUTH_API_KEY", b"eval(proxyInfo)", b"atob(process.env."];
     let marker_at = markers.iter().filter_map(|m| find(data, m)).min()?;
 
-    // The block opens at the nearest `(async` before the marker...
-    let open = rfind(&data[..marker_at], b"(async")?;
+    // The block opens at the nearest `(async` before the marker. Bounded: an
+    // unbounded backwards search can latch onto an unrelated async block far
+    // earlier in the file and take everything between with it.
+    const LOOKBACK: usize = 4096;
+    let window_start = marker_at.saturating_sub(LOOKBACK);
+    let open = window_start + rfind(&data[window_start..marker_at], b"(async")?;
     // ...and closes at the first `})();` after it.
     let close_rel = find(&data[marker_at..], b"})();")?;
     let close = marker_at + close_rel + b"})();".len();
@@ -490,6 +547,38 @@ function bootstrap() {}
         let out = String::from_utf8(strip(&src).unwrap()).unwrap();
         assert!(out.contains("createRequire"), "honest usage must survive:\n{out}");
         assert!(out.contains("require('./package.json')"));
+    }
+
+    #[test]
+    fn two_payloads_in_one_file_are_both_removed() {
+        // A config reinfected twice: two pads, two payloads.
+        let mut src = b"module.exports = {};".to_vec();
+        src.extend(std::iter::repeat(b' ').take(300));
+        src.extend_from_slice(b"global.i = 'A8-1111';first()\n");
+        src.extend_from_slice(b"const extra = 1;");
+        src.extend(std::iter::repeat(b' ').take(300));
+        src.extend_from_slice(b"global['!']='8-2';_$_1e42\n");
+        let out = strip(&src).unwrap();
+        assert!(!signatures::has_critical(&out), "both must go: {out:?}");
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("module.exports = {};"));
+        assert!(text.contains("const extra = 1;"));
+    }
+
+    #[test]
+    fn an_unrelated_async_block_is_not_swallowed() {
+        // A legitimate async IIFE far above the dropper must survive.
+        let mut src = b"(async () => { await realWork(); })();\n".to_vec();
+        src.extend(std::iter::repeat(b'\n').take(200));
+        src.extend_from_slice(b"const filler = 1;\n");
+        src.extend(std::iter::repeat(b' ').take(300));
+        src.extend_from_slice(b"global.i = 'A8-2941';x()\n");
+        let out = String::from_utf8(strip(&src).unwrap()).unwrap();
+        assert!(
+            out.contains("await realWork()"),
+            "honest async block must survive:\n{out}"
+        );
+        assert!(!out.contains("global.i"));
     }
 
     #[test]

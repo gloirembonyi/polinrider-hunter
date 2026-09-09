@@ -247,15 +247,35 @@ impl Finding {
 }
 
 /// Is `path` one of the filenames PolinRider targets?
+///
+/// Called for every file the walker sees, so it must not allocate. The previous
+/// version normalised the whole path and then built a `format!("/{t}")` string
+/// for each of the thirty-odd targets - roughly a hundred allocations per file.
 pub fn is_config_target(path: &Path) -> bool {
-    let name = match path.file_name().and_then(|s| s.to_str()) {
-        Some(n) => n,
-        None => return false,
+    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+        return false;
     };
-    let norm = path.to_string_lossy().replace('\\', "/");
-    CONFIG_TARGETS
+    // The common case: the target is a bare filename.
+    if CONFIG_TARGETS
         .iter()
-        .any(|t| *t == name || norm.ends_with(&format!("/{t}")))
+        .any(|t| !t.contains('/') && *t == name)
+    {
+        return true;
+    }
+    // The few targets that carry a directory (`src/main.ts`, `.vscode/tasks.json`).
+    let nested: bool = CONFIG_TARGETS.iter().any(|t| t.contains('/'));
+    if !nested {
+        return false;
+    }
+    // Only now is normalising the path worth it, and only its tail is needed.
+    let full = path.to_string_lossy();
+    let norm: String = full.chars().map(|c| if c == '\\' { '/' } else { c }).collect();
+    CONFIG_TARGETS.iter().any(|t| {
+        t.contains('/') && {
+            let want = t.len() + 1;
+            norm.len() > want && norm.ends_with(t) && norm.as_bytes()[norm.len() - want] == b'/'
+        }
+    })
 }
 
 fn is_known_detector(path: &Path) -> bool {
@@ -329,6 +349,12 @@ const DETECTOR_IDIOMS: &[&str] = &[
     "const PATTERN",
     "malware",
 ];
+
+/// Is this content exempt from reporting - a declared detector, or a scanner
+/// whose own pattern strings tripped the matcher?
+fn is_exempt(data: &[u8]) -> bool {
+    crate::signatures::contains_marker(data, DETECTOR_MARKER) || looks_like_detector_logic(data)
+}
 
 /// Does this file look like malware *detection* rather than malware?
 ///
@@ -440,13 +466,11 @@ pub fn scan_file(path: &Path) -> Option<Finding> {
         // Might be UTF-16 rather than genuinely binary.
         let text = decode_utf16(&data)?;
         let bytes = text.as_bytes();
-        if crate::signatures::contains_marker(bytes, DETECTOR_MARKER)
-            || looks_like_detector_logic(bytes)
-        {
-            return None;
-        }
         let mut hits = refine(path, signatures::scan(bytes));
         if hits.is_empty() {
+            return None;
+        }
+        if is_exempt(bytes) {
             return None;
         }
         // Offsets refer to the decoded text, not the file, so the byte-splicing
@@ -465,13 +489,17 @@ pub fn scan_file(path: &Path) -> Option<Finding> {
             note: Some("file is UTF-16 encoded; automatic removal is disabled for it".into()),
         });
     }
-    // A file that declares itself a detector is exempt, wherever it lives.
-    if crate::signatures::contains_marker(&data, DETECTOR_MARKER)
-        || looks_like_detector_logic(&data)
-    {
+    // Match first, ask about exemptions afterwards.
+    //
+    // The marker check and the detector-idiom check are full searches over the
+    // file - ten of them between them. Running those before the matcher meant
+    // every clean file in the tree paid for ten scans to learn nothing, which
+    // was most of the cost of a sweep. Nothing needs suppressing until there is
+    // a hit to suppress.
+    let mut hits = refine(path, signatures::scan(&data));
+    if !hits.is_empty() && is_exempt(&data) {
         return None;
     }
-    let mut hits = refine(path, signatures::scan(&data));
     if disguised_font(path, &data) {
         hits.insert(
             0,
@@ -502,11 +530,10 @@ pub fn scan_blob(name: &Path, data: &[u8]) -> Option<Finding> {
     if is_known_detector(name) || looks_binary(data) {
         return None;
     }
-    if crate::signatures::contains_marker(data, DETECTOR_MARKER) || looks_like_detector_logic(data)
-    {
+    let hits = refine(name, signatures::scan(data));
+    if !hits.is_empty() && is_exempt(data) {
         return None;
     }
-    let hits = refine(name, signatures::scan(data));
     if hits.is_empty() {
         None
     } else {
@@ -569,6 +596,50 @@ pub fn scan_tree_cb(root: &Path, quick: bool, on_finding: &mut dyn FnMut(Finding
             }
         }
     }
+}
+
+/// Where a target file would sit if it existed, directly under `root`.
+///
+/// No directory walking: just `root` joined with each known target name. In
+/// practice this is where almost every one of them lives, so it is what makes a
+/// cheap 30-second pass possible.
+pub fn direct_target_paths(root: &Path) -> Vec<PathBuf> {
+    CONFIG_TARGETS.iter().map(|t| root.join(t)).collect()
+}
+
+/// Every file under `root` whose name is one PolinRider targets - infected or
+/// not.
+///
+/// This is the discovery half of the watch list: it catches targets nested
+/// somewhere unexpected (a monorepo's `packages/*/postcss.config.mjs`, say).
+/// Reads nothing; it only looks at names, so it is far cheaper than a scan.
+pub fn find_target_files(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            let path = entry.path();
+            if meta.is_dir() {
+                if std::fs::symlink_metadata(&path)
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                let name = entry.file_name();
+                if !skip_dir(&name.to_string_lossy()) {
+                    stack.push(path);
+                }
+            } else if meta.is_file() && is_config_target(&path) {
+                out.push(path);
+            }
+        }
+    }
+    out
 }
 
 /// Scan several roots.

@@ -249,5 +249,13 @@ pub fn uninstall_hook(repo: &Path) -> std::io::Result<bool> {
 pub fn stage(repo: &Path, file: &Path) -> bool {
     let rel = file.strip_prefix(repo).unwrap_or(file);
     let rel_s = rel.to_string_lossy().replace('\\', "/");
+    // Only if git already tracks it. `git add` on an untracked file does not
+    // "re-stage" anything — it adds a brand-new entry to the index, which is
+    // not the guard's business and surfaces as a change the user never made.
+    // Caught doing exactly that while testing: healing a planted file left it
+    // staged as a new addition.
+    if !util::git(repo, &["ls-files", "--error-unmatch", "--", &rel_s]).ok {
+        return false;
+    }
     util::git(repo, &["add", "--", &rel_s]).ok
 }

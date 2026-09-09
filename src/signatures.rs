@@ -259,21 +259,18 @@ pub struct Hit {
     pub line: usize,
 }
 
+/// True if `data` contains the detector opt-out marker.
+///
+/// This file is the obvious first customer: it lists every string we hunt for,
+/// so without the marker below the hunter would quarantine its own source.
+/// Marker: POLINRIDER-HUNTER-DETECTOR
+pub fn contains_marker(data: &[u8], marker: &str) -> bool {
+    find_lit(data, marker.as_bytes()).is_some()
+}
+
 /// Find every indicator in `data`, sorted by offset.
 pub fn scan(data: &[u8]) -> Vec<Hit> {
-    let mut hits: Vec<Hit> = Vec::new();
-    for ioc in IOCS {
-        if let Some((start, end)) = find(data, ioc.kind) {
-            hits.push(Hit {
-                ioc: ioc.id,
-                sev: ioc.sev,
-                why: ioc.why,
-                start,
-                end,
-                line: 0,
-            });
-        }
-    }
+    let mut hits = scan_inner(data, false);
     hits.sort_by_key(|h| h.start);
     for h in hits.iter_mut() {
         h.line = line_of(data, h.start);
@@ -281,49 +278,178 @@ pub fn scan(data: &[u8]) -> Vec<Hit> {
     hits
 }
 
-/// True if `data` contains the detector opt-out marker.
-///
-/// This file is the obvious first customer: it lists every string we hunt for,
-/// so without the marker below the hunter would cheerfully quarantine its own
-/// source. Marker: POLINRIDER-HUNTER-DETECTOR
-pub fn contains_marker(data: &[u8], marker: &str) -> bool {
-    find_lit(data, marker.as_bytes()).is_some()
-}
-
 /// True if `data` carries at least one critical indicator.
+///
+/// Stops at the first one, which is what makes the healer's verify-after-cut
+/// loop cheap.
 pub fn has_critical(data: &[u8]) -> bool {
-    IOCS.iter()
-        .filter(|i| i.sev == Severity::Critical)
-        .any(|i| find(data, i.kind).is_some())
+    scan_inner(data, true)
+        .iter()
+        .any(|h| h.sev == Severity::Critical)
 }
 
-/// First offset of a given indicator kind.
-fn find(data: &[u8], kind: Kind) -> Option<(usize, usize)> {
-    match kind {
-        Kind::Lit(s) => find_lit(data, s.as_bytes()).map(|i| (i, i + s.len())),
-        Kind::LitCi(s) => find_lit_ci(data, s.as_bytes()).map(|i| (i, i + s.len())),
-        Kind::GlobalIAssign => find_global_i_assign(data),
-        Kind::CampaignId => find_campaign_id(data),
-        Kind::AutoTasksEnabled => find_auto_tasks_enabled(data),
-        Kind::Padding(n) => find_padding(data, n),
-    }
-}
+/// The matcher.
+///
+/// This used to run one `windows().position()` search per indicator - 25
+/// separate passes over every byte of every file. On a background service
+/// walking a developer's whole home directory that is most of the CPU cost, for
+/// no benefit.
+///
+/// Now: one pass. Each indicator is bucketed by the byte it can start with
+/// (both cases, for the case-insensitive ones), so at any given position we
+/// only test the one or two indicators that could possibly match there. The
+/// padding heuristic keeps its own pass because it starts on whitespace, which
+/// would otherwise put it in the busiest bucket in the table.
+///
+/// `stop_early` returns as soon as a critical indicator is found.
+fn scan_inner(data: &[u8], stop_early: bool) -> Vec<Hit> {
+    let mut hits: Vec<Hit> = Vec::new();
 
-/// `allowAutomaticTasks` whose value enables it.
-fn find_auto_tasks_enabled(data: &[u8]) -> Option<(usize, usize)> {
-    let pat = b"allowAutomaticTasks";
-    let mut from = 0usize;
-    while let Some(rel) = find_lit(&data[from..], pat) {
-        let start = from + rel;
-        // Look at the short window after the key for its value.
-        let tail_end = (start + pat.len() + 24).min(data.len());
-        let tail = &data[start + pat.len()..tail_end];
-        if find_lit(tail, b"true").is_some() || find_lit_ci(tail, b"\"on\"").is_some() {
-            return Some((start, start + pat.len()));
+    let hit_of = |k: usize, start: usize, end: usize| Hit {
+        ioc: IOCS[k].id,
+        sev: IOCS[k].sev,
+        why: IOCS[k].why,
+        start,
+        end,
+        line: 0,
+    };
+
+    // Structural check, one pass of its own.
+    for (k, ioc) in IOCS.iter().enumerate() {
+        if let Kind::Padding(n) = ioc.kind {
+            if let Some((s, e)) = find_padding(data, n) {
+                hits.push(hit_of(k, s, e));
+                if stop_early && ioc.sev == Severity::Critical {
+                    return hits;
+                }
+            }
         }
-        from = start + 1;
     }
-    None
+
+    // Everything else, one pass.
+    let buckets = index();
+    let mut done = [false; 64];
+    debug_assert!(IOCS.len() <= 64);
+    for i in 0..data.len() {
+        let bucket = &buckets[data[i] as usize];
+        if bucket.is_empty() {
+            continue;
+        }
+        for &k in bucket {
+            if done[k] {
+                continue;
+            }
+            if let Some((s, e)) = match_at(data, i, IOCS[k].kind) {
+                done[k] = true;
+                hits.push(hit_of(k, s, e));
+                if stop_early && IOCS[k].sev == Severity::Critical {
+                    return hits;
+                }
+            }
+        }
+    }
+    hits
+}
+
+/// Indicators bucketed by the byte they can begin with.
+fn index() -> &'static [Vec<usize>; 256] {
+    use std::sync::OnceLock;
+    static IDX: OnceLock<[Vec<usize>; 256]> = OnceLock::new();
+    IDX.get_or_init(|| {
+        let mut by: [Vec<usize>; 256] = std::array::from_fn(|_| Vec::new());
+        for (k, ioc) in IOCS.iter().enumerate() {
+            for b in first_bytes(ioc.kind) {
+                by[b as usize].push(k);
+            }
+        }
+        by
+    })
+}
+
+/// Which bytes can this indicator start on? Empty means "not in the table".
+fn first_bytes(kind: Kind) -> Vec<u8> {
+    match kind {
+        Kind::Lit(s) => s.as_bytes().first().copied().into_iter().collect(),
+        Kind::LitCi(s) => match s.as_bytes().first().copied() {
+            Some(b) => {
+                let lower = b.to_ascii_lowercase();
+                let upper = b.to_ascii_uppercase();
+                if lower == upper {
+                    vec![lower]
+                } else {
+                    vec![lower, upper]
+                }
+            }
+            None => vec![],
+        },
+        Kind::GlobalIAssign => vec![b'g'],
+        Kind::CampaignId => vec![b'A'],
+        Kind::AutoTasksEnabled => vec![b'a'],
+        // Starts on a space or tab; given its own pass instead.
+        Kind::Padding(_) => vec![],
+    }
+}
+
+fn starts_with_at(data: &[u8], i: usize, needle: &[u8]) -> bool {
+    data.len() >= i + needle.len() && &data[i..i + needle.len()] == needle
+}
+
+fn starts_with_ci_at(data: &[u8], i: usize, needle: &[u8]) -> bool {
+    data.len() >= i + needle.len()
+        && data[i..i + needle.len()]
+            .iter()
+            .zip(needle)
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+}
+
+/// Does `kind` match starting exactly at `i`? (A test, not a search.)
+fn match_at(data: &[u8], i: usize, kind: Kind) -> Option<(usize, usize)> {
+    match kind {
+        Kind::Lit(s) => starts_with_at(data, i, s.as_bytes()).then(|| (i, i + s.len())),
+        Kind::LitCi(s) => starts_with_ci_at(data, i, s.as_bytes()).then(|| (i, i + s.len())),
+        Kind::GlobalIAssign => {
+            let pat = b"global.i";
+            if !starts_with_at(data, i, pat) {
+                return None;
+            }
+            let mut j = i + pat.len();
+            while j < data.len() && (data[j] == b' ' || data[j] == b'\t') {
+                j += 1;
+            }
+            // `==` is a comparison, not the loader's assignment.
+            if j < data.len() && data[j] == b'=' && data.get(j + 1) != Some(&b'=') {
+                Some((i, j + 1))
+            } else {
+                None
+            }
+        }
+        Kind::CampaignId => {
+            if i + 7 <= data.len()
+                && data[i] == b'A'
+                && (data[i + 1] == b'8' || data[i + 1] == b'9')
+                && data[i + 2] == b'-'
+                && data[i + 3..i + 7].iter().all(|b| b.is_ascii_digit())
+            {
+                Some((i, i + 7))
+            } else {
+                None
+            }
+        }
+        Kind::AutoTasksEnabled => {
+            let pat = b"allowAutomaticTasks";
+            if !starts_with_at(data, i, pat) {
+                return None;
+            }
+            let end = (i + pat.len() + 24).min(data.len());
+            let tail = &data[i + pat.len()..end];
+            if find_lit(tail, b"true").is_some() || find_lit_ci(tail, b"\"on\"").is_some() {
+                Some((i, i + pat.len()))
+            } else {
+                None
+            }
+        }
+        Kind::Padding(_) => None,
+    }
 }
 
 fn find_lit(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -337,14 +463,31 @@ fn find_lit_ci(hay: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || hay.len() < needle.len() {
         return None;
     }
-    hay.windows(needle.len()).position(|w| {
-        w.iter()
+    // Compare the first byte before the rest. `windows(n).position(|w| zip.all)`
+    // walks the whole needle at every single offset, which on a megabyte of
+    // minified JavaScript is an enormous amount of work to discover a mismatch
+    // that the first byte would have settled.
+    let lower = needle[0].to_ascii_lowercase();
+    let upper = needle[0].to_ascii_uppercase();
+    let last = hay.len() - needle.len();
+    for i in 0..=last {
+        let b = hay[i];
+        if b != lower && b != upper {
+            continue;
+        }
+        if hay[i..i + needle.len()]
+            .iter()
             .zip(needle)
-            .all(|(a, b)| a.eq_ignore_ascii_case(b))
-    })
+            .all(|(a, c)| a.eq_ignore_ascii_case(c))
+        {
+            return Some(i);
+        }
+    }
+    None
 }
 
 /// `global.i` + optional spaces/tabs + `=`.
+#[cfg(test)]
 fn find_global_i_assign(data: &[u8]) -> Option<(usize, usize)> {
     let pat = b"global.i";
     let mut from = 0usize;
@@ -364,6 +507,7 @@ fn find_global_i_assign(data: &[u8]) -> Option<(usize, usize)> {
 }
 
 /// `A8-1234` / `A9-1234`.
+#[cfg(test)]
 fn find_campaign_id(data: &[u8]) -> Option<(usize, usize)> {
     if data.len() < 7 {
         return None;
@@ -451,17 +595,75 @@ mod tests {
         assert_eq!(start, 2);
     }
 
+    /// Does a scan of `data` report the given indicator?
+    fn reports(data: &[u8], ioc: &str) -> bool {
+        scan(data).iter().any(|h| h.ioc == ioc)
+    }
+
     #[test]
     fn auto_tasks_off_is_not_a_hit() {
         // "off" is the hardened setting; flagging it would punish the fix.
-        assert!(find_auto_tasks_enabled(br#""task.allowAutomaticTasks": "off","#).is_none());
-        assert!(find_auto_tasks_enabled(br#""task.allowAutomaticTasks": false"#).is_none());
+        assert!(!reports(br#""task.allowAutomaticTasks": "off","#, "vscode-allow-autorun"));
+        assert!(!reports(br#""task.allowAutomaticTasks": false"#, "vscode-allow-autorun"));
     }
 
     #[test]
     fn auto_tasks_on_is_a_hit() {
-        assert!(find_auto_tasks_enabled(br#""task.allowAutomaticTasks": true"#).is_some());
-        assert!(find_auto_tasks_enabled(br#""task.allowAutomaticTasks": "on""#).is_some());
+        assert!(reports(br#""task.allowAutomaticTasks": true"#, "vscode-allow-autorun"));
+        assert!(reports(br#""task.allowAutomaticTasks": "on""#, "vscode-allow-autorun"));
+    }
+
+    #[test]
+    fn indexed_pass_finds_the_same_things_a_naive_scan_would() {
+        // One representative of each indicator shape in a single buffer.
+        let sample = concat!(
+            "global.i = 'A8-2941';",
+            "0xA322e5f3",
+            "X-Payload-B64",
+            "/0x/cls",
+            "global['!']",
+            "parseInt(_0x",
+            "AUTH_API_KEY",
+            "windowsHide",
+        );
+        let hits = scan(sample.as_bytes());
+        let ids: Vec<&str> = hits.iter().map(|h| h.ioc).collect();
+        for want in [
+            "global-i-assign",
+            "campaign-id",
+            "eth-dead-drop-sender",
+            "payload-header",
+            "stage2-path-cls",
+            "global-bang",
+            "hex-string-array",
+            "auth-api-key",
+        ] {
+            assert!(ids.contains(&want), "missed {want} in {ids:?}");
+        }
+    }
+
+    #[test]
+    fn hits_come_back_in_file_order() {
+        let sample = b"AUTH_API_KEY .... global.i = 'A9-1234';";
+        let hits = scan(sample);
+        let offsets: Vec<usize> = hits.iter().map(|h| h.start).collect();
+        let mut sorted = offsets.clone();
+        sorted.sort();
+        assert_eq!(offsets, sorted);
+    }
+
+    #[test]
+    fn early_exit_still_reports_critical() {
+        assert!(has_critical(b"x /0x/cls y"));
+        assert!(!has_critical(b"nothing of interest here at all"));
+    }
+
+    #[test]
+    fn match_at_is_anchored_not_a_search() {
+        // "global.i =" is at offset 4, so testing offset 0 must not find it.
+        let d = b"xxxxglobal.i = 1";
+        assert!(match_at(d, 0, Kind::GlobalIAssign).is_none());
+        assert!(match_at(d, 4, Kind::GlobalIAssign).is_some());
     }
 
     #[test]
