@@ -733,6 +733,12 @@ fn cmd_install(args: &Args, mut cfg: Config) -> i32 {
             ),
             Err(e) => eprintln!("could not register autostart: {e}"),
         }
+    }
+
+    // Registering a login entry and having a guard running right now are two
+    // separate things, and were once one flag. Somebody who does not want the
+    // tool starting itself at login still wants it watching this session.
+    if !args.has("--no-guard") {
         // Hand over from any guard already running. Without this an upgrade
         // silently keeps the old build alive: the new process finds the lock
         // held, exits, and `install` reports success.
@@ -755,16 +761,16 @@ fn cmd_install(args: &Args, mut cfg: Config) -> i32 {
                 // pid that actually holds the heartbeat, not the one we spawned:
                 // if another guard was already running, ours exits immediately
                 // and printing its pid would name a dead process.
-                if service::wait_for_daemon(cfg.interval, 5) {
+                // Report the pid that holds the heartbeat, which is the guard
+                // that is actually watching. It is usually the one just spawned;
+                // when a hand-over raced it may not be, and the distinction was
+                // never worth the confusing second message it used to print.
+                if service::wait_for_daemon(cfg.interval, 10) {
                     let live = service::daemon_pid().unwrap_or(pid);
-                    if live == pid {
-                        println!("{} pid {live}", util::c(GREEN, "guard running in background,"));
-                    } else {
-                        println!(
-                            "{} pid {live}",
-                            util::c(GREEN, "a guard was already running,")
-                        );
-                    }
+                    println!(
+                        "{} pid {live}",
+                        util::c(GREEN, "guard running in background,")
+                    );
                 } else {
                     println!(
                         "{}",
@@ -777,6 +783,14 @@ fn cmd_install(args: &Args, mut cfg: Config) -> i32 {
             }
             Err(e) => eprintln!("could not start the guard: {e}"),
         }
+    } else {
+        println!(
+            "\n{}",
+            util::c(
+                DIM,
+                "guard not started (--no-guard); start it with `polinrider-hunter install`"
+            )
+        );
     }
     println!(
         "\n{}",
@@ -828,6 +842,8 @@ fn cmd_stop() -> i32 {
     let (extra, more_denied) = service::stop_stragglers();
     stopped += extra;
     denied.extend(more_denied);
+    denied.sort_unstable();
+    denied.dedup();
     if extra > 0 {
         println!("{} {extra} other guard process(es)", util::c(GREEN, "stopped"));
     }
@@ -846,9 +862,9 @@ fn cmd_stop() -> i32 {
             "{}",
             util::c(
                 DIM,
-                "The operating system refused. That happens when the process belongs to
-                 another session or was started with higher privileges. Close the terminal
-                 that launched it, or end it from Task Manager / `sudo kill`, then retry."
+                "The operating system refused. That happens when the process belongs to another\n\
+                 session, or was started with higher privileges. End it from Task Manager\n\
+                 (or with `sudo kill`), then run this again."
             )
         );
         return 1;
@@ -1168,7 +1184,8 @@ Detects and removes the PolinRider supply-chain malware.
   --interval <secs>      install: seconds between quick passes (default 30).
                          monitor: seconds between redraws (default 3).
   --port <n>             monitor --web: port to listen on (default 8787).
-  --no-autostart         install: set up, but do not start at login.
+  --no-autostart         install: do not register a login entry.
+  --no-guard             install: set everything up but do not start the guard.
   --no-color             Plain output.
 
 {b}NOTES{r}

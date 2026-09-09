@@ -79,19 +79,44 @@ impl Drop for Sandbox {
 /// which is how one hunt produced several hundred bogus findings. The scanner
 /// now skips any marked quarantine, but leaving litter behind was the first
 /// mistake and this fixes that one.
-struct SuiteCleanup;
-impl Drop for SuiteCleanup {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(shared_home());
-    }
-}
-
+/// Reclaim the state directories left by *earlier* runs.
+///
+/// The first attempt deleted this run's own home, from a test named to sort
+/// last. Cargo runs tests in parallel, so "last" meant nothing: it removed the
+/// quarantine while another test was still writing to it, and that test failed
+/// with a missing path. Cleaning up only directories belonging to processes
+/// that have finished is race-free by construction, and TEMP still never
+/// accumulates more than the run in progress.
 #[test]
-fn zz_cleanup_the_shared_home() {
-    // Named to sort last. Not a real assertion: it exists so the suite leaves
-    // nothing in TEMP for a later sweep to trip over.
-    let _guard = SuiteCleanup;
-    assert!(shared_home().exists() || true);
+fn zz_reclaim_state_directories_from_earlier_runs() {
+    let mine = shared_home();
+    let Some(parent) = mine.parent().map(Path::to_path_buf) else {
+        return;
+    };
+    // Every directory this suite creates carries the test process id, and other
+    // tests in *this* process are very likely still using theirs - deleting one
+    // mid-test is what the previous version of this cleanup did. Skip anything
+    // tagged with our own pid; what remains belongs to a run that has finished.
+    let mine_tag = format!("-{}", std::process::id());
+    let mut reclaimed = 0;
+    if let Ok(entries) = std::fs::read_dir(&parent) {
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let Some(text) = name.to_str() else { continue };
+            if !(text.starts_with("prh-test-home-") || text.starts_with("prh-live-")) {
+                continue;
+            }
+            if text.ends_with(&mine_tag) || text.contains(&format!("{mine_tag}-")) {
+                continue;
+            }
+            if std::fs::remove_dir_all(e.path()).is_ok() {
+                reclaimed += 1;
+            }
+        }
+    }
+    // Nothing to assert about the count - a first run finds none. This exists
+    // for its effect, and the assertion is only that it did not blow up.
+    assert!(reclaimed < usize::MAX);
 }
 
 /// The camouflage every sample uses: enough whitespace to push the payload off
@@ -537,4 +562,225 @@ fn a_detector_file_is_never_healed() {
         "a declared detector must be exempt"
     );
     assert_eq!(sb.read(&p), body);
+}
+
+// ---------------------------------------------------------------------------
+// The guard lifecycle, exercised through the real binary.
+//
+// Every bug in this area reached a user: `install` reporting a guard that had
+// already exited, a re-install failing because the running guard held the
+// executable open, `stop` claiming nothing was running when the kill had in
+// fact been refused. None of those are visible from a unit test of the matcher,
+// so they are driven here through the compiled command line.
+// ---------------------------------------------------------------------------
+
+/// The binary under test, as cargo built it next to the test executable.
+fn hunter_bin() -> PathBuf {
+    let mut p = std::env::current_exe().expect("test exe path");
+    p.pop(); // deps/
+    if p.ends_with("deps") {
+        p.pop();
+    }
+    p.join(format!("polinrider-hunter{}", std::env::consts::EXE_SUFFIX))
+}
+
+/// Run the binary with its state pointed at a private home.
+fn run_hunter(home: &Path, args: &[&str]) -> (i32, String) {
+    let out = std::process::Command::new(hunter_bin())
+        .args(args)
+        .arg("--no-color")
+        .env("POLINRIDER_HOME", home)
+        .output()
+        .expect("run polinrider-hunter");
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    (out.status.code().unwrap_or(-1), text)
+}
+
+/// A state directory of its own, so these never touch the real installation.
+fn private_home(tag: &str) -> PathBuf {
+    let p = std::env::temp_dir().join(format!(
+        "prh-live-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&p).expect("create private home");
+    p
+}
+
+#[test]
+fn stop_says_so_plainly_when_no_guard_is_running() {
+    let home = private_home("stop-idle");
+    let (code, out) = run_hunter(&home, &["stop"]);
+    assert_eq!(code, 0, "stopping nothing is not an error:\n{out}");
+    assert!(
+        out.contains("no guard was running"),
+        "expected a plain statement, got:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_guard_publishes_its_heartbeat_before_it_does_any_work() {
+    // The regression this pins: the heartbeat used to be written at the top of
+    // the scan loop, after a priority shell-out that takes seconds. In that gap
+    // `install` could not tell a live guard from a dead one, and a second
+    // install would start a rival.
+    let home = private_home("heartbeat");
+    let project = home.join("watched");
+    std::fs::create_dir_all(&project).unwrap();
+    // A guard with nothing configured exits immediately, and rightly so.
+    std::fs::write(
+        home.join("config.txt"),
+        format!("path = {}
+", project.display()),
+    )
+    .unwrap();
+
+    let mut child = std::process::Command::new(hunter_bin())
+        .args(["daemon"])
+        .env("POLINRIDER_HOME", &home)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn guard");
+
+    let beat = home.join("daemon.heartbeat");
+    let mut appeared = false;
+    for _ in 0..40 {
+        if beat.exists() {
+            appeared = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let recorded = std::fs::read_to_string(&beat).unwrap_or_default();
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&home);
+
+    assert!(appeared, "no heartbeat within 4s of the guard starting");
+    let pid: u32 = recorded
+        .split_whitespace()
+        .next()
+        .and_then(|p| p.parse().ok())
+        .expect("heartbeat starts with a pid");
+    assert_eq!(pid, child.id(), "the heartbeat names the wrong process");
+}
+
+#[test]
+fn monitor_reports_a_snapshot_without_a_guard_or_a_checkout() {
+    // "Make it work without cloning the repo": the dashboard is part of the
+    // binary, so it must answer from any directory with no project present.
+    let home = private_home("monitor");
+    let (code, out) = run_hunter(&home, &["monitor", "--once"]);
+    assert_eq!(code, 0, "monitor should not fail on an idle install:\n{out}");
+    for expected in ["guard", "cleaned", "quarantined"] {
+        assert!(
+            out.contains(expected),
+            "snapshot is missing {expected:?}:\n{out}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn monitor_json_is_parseable_and_reports_the_guard_as_down() {
+    let home = private_home("monitor-json");
+    let (code, out) = run_hunter(&home, &["monitor", "--once", "--json"]);
+    assert_eq!(code, 0, "monitor --json failed:\n{out}");
+    let json = out.trim();
+    assert!(json.starts_with('{') && json.ends_with('}'), "not JSON:\n{out}");
+    assert!(
+        json.contains("\"running\":false"),
+        "no guard is running, so it should say so:\n{out}"
+    );
+    // The counts a dashboard renders must always be present, even at zero -
+    // a missing key renders as "undefined", which reads like a broken page.
+    for key in ["\"cleaned\"", "\"review\"", "\"quarantined\"", "\"paths\""] {
+        assert!(json.contains(key), "missing {key} in:\n{json}");
+    }
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_one_shot_sweep_never_claims_the_guard_heartbeat() {
+    // `install` runs a sweep in its own process before starting the guard. That
+    // sweep used to publish a heartbeat under the installer's pid, so install
+    // read its own sweep back as a guard that was already running - and the
+    // guard it then spawned could see the same beat, decide the lock was taken
+    // and exit, leaving the machine unwatched while install reported success.
+    let home = private_home("oneshot");
+    let project = home.join("watched");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("index.js"), b"export const a = 1;\n").unwrap();
+
+    let (code, out) = run_hunter(&home, &["clean", project.to_str().unwrap()]);
+    assert_eq!(code, 0, "a clean tree should exit 0:\n{out}");
+    assert!(
+        !home.join("daemon.heartbeat").exists(),
+        "a one-shot run left a heartbeat behind, which reads as a live guard"
+    );
+
+    let (_, status) = run_hunter(&home, &["status"]);
+    assert!(
+        status.contains("not running"),
+        "status should not claim a guard after a one-shot run:\n{status}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn install_does_not_hold_the_terminal_open_after_it_finishes() {
+    // The guard is spawned detached, but on Windows a new process inherits every
+    // inheritable handle - including the pipe a shell gives us for stdout when
+    // the command is part of a pipeline, which the one-line installer always is.
+    // The shell then waits for every writer to close, so `install` appeared to
+    // hang forever even though it had finished and the guard was running.
+    //
+    // Reading the child's stdout to end-of-file is exactly what a shell does, so
+    // this reproduces it: if the handle leaks, the read never returns.
+    let home = private_home("pipe");
+    let project = home.join("watched");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("index.js"), b"export const a = 1;\n").unwrap();
+
+    let mut child = std::process::Command::new(hunter_bin())
+        .args(["install", project.to_str().unwrap(), "--no-autostart", "--no-color"])
+        .env("POLINRIDER_HOME", &home)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn install");
+
+    let mut out = child.stdout.take().expect("piped stdout");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = String::new();
+        let _ = out.read_to_string(&mut buf);
+        let _ = tx.send(buf);
+    });
+
+    let text = rx.recv_timeout(std::time::Duration::from_secs(60));
+    let _ = child.wait();
+
+    // Whatever happened, do not leave a guard running for the next test.
+    let (_, _) = run_hunter(&home, &["stop"]);
+    let leaked = text.is_err();
+    let text = text.unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&home);
+
+    assert!(
+        !leaked,
+        "stdout never reached end-of-file: the guard inherited the pipe and \
+         would hang the caller's terminal"
+    );
+    assert!(
+        text.contains("guard running in background"),
+        "install should report a live guard:\n{text}"
+    );
 }

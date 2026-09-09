@@ -141,6 +141,8 @@ pub fn spawn_daemon(exe: &Path) -> std::io::Result<u32> {
         use std::os::windows::process::CommandExt;
         // DETACHED_PROCESS | CREATE_NO_WINDOW
         cmd.creation_flags(0x0000_0008 | 0x0800_0000);
+        // ...and stop the guard inheriting this terminal's pipes. See below.
+        detach_std_handles();
     }
 
     let child = cmd.spawn()?;
@@ -196,6 +198,45 @@ pub fn lower_priority() {
     #[cfg(not(windows))]
     {
         let _ = util::run("renice", &["-n", "10", "-p", &pid.to_string()]);
+    }
+}
+
+/// Stop our standard handles from being inherited by anything we spawn.
+///
+/// Windows duplicates every inheritable handle into a new process, and Rust
+/// always creates processes with inheritance enabled. When this program is run
+/// from a pipeline - `polinrider-hunter install | tee log`, or the one-line
+/// installer, or any shell that captures output - our stdout *is* that pipe, and
+/// the guard we start in the background inherits it. The shell then waits for
+/// every writer to close before finishing the command, so the terminal appears
+/// to hang for as long as the guard runs, which is forever.
+///
+/// Clearing the inherit flag on our own three handles fixes it. We keep using
+/// them normally; they simply stop being copied into children.
+#[cfg(windows)]
+fn detach_std_handles() {
+    // Declared here rather than pulled in as a dependency: the whole point of
+    // this tool is that it has no supply chain.
+    type Handle = *mut std::ffi::c_void;
+    const STD_INPUT: u32 = -10i32 as u32;
+    const STD_OUTPUT: u32 = -11i32 as u32;
+    const STD_ERROR: u32 = -12i32 as u32;
+    const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+    const INVALID: Handle = -1isize as Handle;
+
+    extern "system" {
+        fn GetStdHandle(which: u32) -> Handle;
+        fn SetHandleInformation(h: Handle, mask: u32, flags: u32) -> i32;
+    }
+
+    for which in [STD_INPUT, STD_OUTPUT, STD_ERROR] {
+        unsafe {
+            let h = GetStdHandle(which);
+            if !h.is_null() && h != INVALID {
+                // Mask the inherit bit, set it to zero.
+                SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
     }
 }
 
@@ -348,6 +389,13 @@ pub fn stop_daemon() -> Stopped {
 /// Matching by image name is blunt, so it deliberately excludes this process
 /// and anything that is not our own executable name.
 pub fn stop_stragglers() -> (usize, Vec<u32>) {
+    // Matching by image name cannot tell which state directory a process
+    // belongs to, so it is only safe for the single installation a normal
+    // machine has. With POLINRIDER_HOME set there may be several, and killing
+    // somebody else's is not ours to do.
+    if !config::home_is_default() {
+        return (0, Vec::new());
+    }
     let me = std::process::id();
     let mut stopped = 0;
     let mut denied = Vec::new();

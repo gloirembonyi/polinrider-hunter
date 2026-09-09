@@ -37,6 +37,16 @@ impl Default for Config {
 
 /// Per-user state directory. Honours `POLINRIDER_HOME` for tests and for
 /// people who would rather keep it somewhere else.
+/// Is this the one state directory a normal installation uses?
+///
+/// `POLINRIDER_HOME` exists for tests and for running two configurations side
+/// by side. Anything that reaches beyond our own state - sweeping every process
+/// on the machine by name, say - must not fire in that case, or one instance
+/// tramples another.
+pub fn home_is_default() -> bool {
+    std::env::var("POLINRIDER_HOME").map(|p| p.is_empty()).unwrap_or(true)
+}
+
 pub fn home() -> PathBuf {
     if let Ok(p) = std::env::var("POLINRIDER_HOME") {
         if !p.is_empty() {

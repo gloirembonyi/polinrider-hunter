@@ -62,7 +62,11 @@ pub fn run(cfg: &Config, once: bool) -> i32 {
         if let Some(age) = service::daemon_alive(cfg.interval) {
             util::log_line(
                 &log,
-                &format!("another daemon is alive (heartbeat {age}s ago); exiting"),
+                &format!(
+                    "another daemon is alive (heartbeat {age}s ago, pid {:?}); pid {} exiting",
+                    service::daemon_pid(),
+                    std::process::id()
+                ),
                 true,
             );
             return 0;
@@ -70,7 +74,8 @@ pub fn run(cfg: &Config, once: bool) -> i32 {
         util::log_line(
             &log,
             &format!(
-                "guard started: {} path(s), quick={}s full={}s git={}s auto_heal={}",
+                "guard started: pid {}, {} path(s), quick={}s full={}s git={}s auto_heal={}",
+                std::process::id(),
                 cfg.paths.len(),
                 cfg.interval,
                 cfg.full_interval,
@@ -79,6 +84,17 @@ pub fn run(cfg: &Config, once: bool) -> i32 {
             ),
             false,
         );
+    }
+
+    // Claim the heartbeat now, before doing anything slow.
+    //
+    // It used to be written at the top of the loop, which is after the priority
+    // shell-out below - leaving several seconds in which the guard was running
+    // but nothing could tell. `install` waits for a heartbeat to confirm the
+    // guard came up, so in that window it reported the wrong thing, and a second
+    // `install` could spawn a rival daemon because the lock looked free.
+    if !once {
+        service::write_heartbeat();
     }
 
     // Lower our own priority: a guard must never compete with the work the
@@ -95,7 +111,15 @@ pub fn run(cfg: &Config, once: bool) -> i32 {
     let mut total_healed = 0usize;
 
     loop {
-        service::write_heartbeat();
+        // Only a resident guard publishes a heartbeat. A one-shot sweep - what
+        // `install` runs before starting the guard, and what CI calls - is not
+        // one, and writing it here meant `install` read its own sweep back as
+        // "a guard is already running" and named its own pid. Worse, the guard
+        // it had just spawned could see that fresh heartbeat, conclude another
+        // instance owned the lock, and quietly exit.
+        if !once {
+            service::write_heartbeat();
+        }
         let now = util::now_secs();
 
         // ---- quick pass over known targets -----------------------------------
