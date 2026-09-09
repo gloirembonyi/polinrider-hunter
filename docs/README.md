@@ -65,7 +65,7 @@ full sweep.
 
 ## Serving the binary
 
-`bin/polinrider-hunter-windows-x86_64.exe` (362 KB) is committed, so
+`bin/polinrider-hunter-windows-x86_64.exe` (381 KB) is committed, so
 `irm https://your-domain/install.ps1 | iex` works the moment the site is live —
 **no GitHub repository or release is required**. The installer downloads that
 file and checks it really is an executable before trusting it, because a static
