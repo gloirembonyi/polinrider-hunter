@@ -94,6 +94,13 @@ pub fn heal(finding: &Finding, dry_run: bool) -> Outcome {
 
     // Padding alone is strong evidence but not proof. Only act on it inside a
     // file PolinRider is known to write to; elsewhere a human should look.
+    // Offsets from a UTF-16 decode do not map back to file bytes.
+    if finding.hits.iter().any(|h| h.ioc == "utf16-encoded") {
+        return Outcome::Skipped(
+            "UTF-16 encoded; re-save it as UTF-8 and re-run, or clean it by hand".into(),
+        );
+    }
+
     if finding.padding_only() && !scanner::is_config_target(path) {
         return Outcome::Skipped(
             "padding heuristic only, and not a known target file; review manually".into(),
@@ -212,7 +219,64 @@ pub fn strip(data: &[u8]) -> Option<Vec<u8>> {
     }
     // Shape 2: everything else seen so far — one line of legitimate code, a long
     // whitespace pad, then the payload out to end of line.
-    strip_padded_tail(data)
+    let mut out = strip_padded_tail(data)?;
+    remove_dead_create_require(&mut out);
+    Some(out)
+}
+
+/// Remove an injected `createRequire` shim once nothing uses `require` any more.
+///
+/// `.mjs` is ESM and has no `require()`, so the loader prepends
+///
+/// ```js
+/// import { createRequire } from 'module';
+/// const require = createRequire(import.meta.url);
+/// ```
+///
+/// to manufacture one for its payload. Cutting the payload alone leaves that
+/// scaffolding sitting at the top of the file - which is how a "cleaned" config
+/// ends up still differing from the pristine original, and leaves the next
+/// payload half its work already done.
+///
+/// Only removed when `require` is genuinely unused afterwards: plenty of honest
+/// ESM files reach for `createRequire` on purpose.
+fn remove_dead_create_require(data: &mut Vec<u8>) {
+    let text = String::from_utf8_lossy(data).into_owned();
+    if !text.contains("createRequire") {
+        return;
+    }
+
+    let is_shim = |l: &str| {
+        let t = l.trim();
+        (t.starts_with("import") && t.contains("createRequire") && t.contains("module"))
+            || (t.starts_with("const require") && t.contains("createRequire("))
+    };
+
+    // Would anything still call require() once the shim is gone?
+    let still_used = text
+        .lines()
+        .filter(|l| !is_shim(l))
+        .any(|l| l.contains("require(") && !l.contains("createRequire("));
+    if still_used {
+        return;
+    }
+
+    let mut stripped = data.clone();
+    remove_line_where(&mut stripped, is_shim);
+    // Tidy the blank line the removal leaves at the top.
+    let s = String::from_utf8_lossy(&stripped).into_owned();
+    let crlf = s.contains("\r\n");
+    let nl = if crlf { "\r\n" } else { "\n" };
+    let mut t = s;
+    while t.starts_with(nl) {
+        t = t[nl.len()..].to_string();
+    }
+    let triple = format!("{nl}{nl}{nl}");
+    let double = format!("{nl}{nl}");
+    while t.contains(&triple) {
+        t = t.replace(&triple, &double);
+    }
+    *data = t.into_bytes();
 }
 
 /// Remove `(async () => { ... })();` blocks that contain a dropper indicator,
@@ -404,6 +468,28 @@ function bootstrap() {}
         let mut v = b"a\r\nDROP\r\nb\n".to_vec();
         remove_line_where(&mut v, |l| l == "DROP");
         assert_eq!(v, b"a\r\nb\n");
+    }
+
+    #[test]
+    fn injected_create_require_shim_goes_with_the_payload() {
+        let mut src = b"import { createRequire } from 'module';\n\nconst require = createRequire(import.meta.url);\n\nconst config = {};\n\nexport default config;".to_vec();
+        src.extend(std::iter::repeat(b' ').take(400));
+        src.extend_from_slice(b"global.i = 'A8-2941';require('http')\n");
+        let out = String::from_utf8(strip(&src).unwrap()).unwrap();
+        assert!(!out.contains("createRequire"), "scaffolding must go too:\n{out}");
+        assert!(out.contains("const config = {};"));
+        assert!(out.contains("export default config;"));
+        assert!(out.starts_with("const config"), "no leading blank lines:\n{out:?}");
+    }
+
+    #[test]
+    fn a_create_require_that_is_actually_used_is_kept() {
+        let mut src = b"import { createRequire } from 'module';\nconst require = createRequire(import.meta.url);\nconst pkg = require('./package.json');\nexport default pkg;".to_vec();
+        src.extend(std::iter::repeat(b' ').take(400));
+        src.extend_from_slice(b"global.i = 'A8-2941';x()\n");
+        let out = String::from_utf8(strip(&src).unwrap()).unwrap();
+        assert!(out.contains("createRequire"), "honest usage must survive:\n{out}");
+        assert!(out.contains("require('./package.json')"));
     }
 
     #[test]

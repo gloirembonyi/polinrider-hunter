@@ -136,7 +136,12 @@ pub fn run(cfg: &Config, once: bool) -> i32 {
         }
 
         // ---- running stage-2 processes ---------------------------------------
-        for s in procscan::find() {
+        //
+        // Only on the full cycle, not every quick pass. Enumerating command
+        // lines means spawning a shell, and doing that every 30 seconds is a
+        // lot of work for something that changes rarely - the payload has to
+        // survive a build to exist at all.
+        for s in if due_full { procscan::find() } else { Vec::new() } {
             if cfg.kill_procs {
                 let killed = procscan::kill(s.pid);
                 util::log_line(

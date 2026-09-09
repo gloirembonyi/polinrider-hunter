@@ -109,10 +109,15 @@ fn blob_at(repo: &Path, git_ref: &str, file: &str) -> Option<Vec<u8>> {
         .nth(2)
         .filter(|s| s.len() >= 7)?
         .to_string();
-    let out = std::process::Command::new("git")
-        .args(["-C", repo.to_str()?, "cat-file", "blob", &sha])
-        .output()
-        .ok()?;
+    // Not via util::run because blob contents are bytes, not UTF-8 text.
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["-C", repo.to_str()?, "cat-file", "blob", &sha]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let out = cmd.output().ok()?;
     if out.status.success() {
         Some(out.stdout)
     } else {

@@ -118,14 +118,18 @@ fn spaced_variant_in_postcss_config_crlf() {
     assert_healed(&clean_one(&p));
 
     let after = sb.read(&p);
+    // The `createRequire` shim goes too: `.mjs` is ESM and has no `require()`,
+    // so the loader injects one for its payload. Removing the payload but
+    // leaving the scaffolding is how a "cleaned" file ends up still differing
+    // from the pristine original - which is exactly what was observed on three
+    // real repositories.
     assert_eq!(
-        after,
-        b"import { createRequire } from 'module';\r\n\r\nexport default config;\r\n",
-        "the real code, and only the real code, must remain"
+        after, b"export default config;\r\n",
+        "payload and its scaffolding must both go, leaving the original"
     );
     assert!(!signatures::has_critical(&after));
-    // CRLF preserved throughout: a one-line fix must stay a one-line diff.
-    assert_eq!(after.windows(2).filter(|w| *w == b"\r\n").count(), 3);
+    // CRLF preserved: the surviving line keeps the file's own ending.
+    assert_eq!(after.windows(2).filter(|w| *w == b"\r\n").count(), 1);
 }
 
 #[test]

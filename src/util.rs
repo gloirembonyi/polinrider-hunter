@@ -43,16 +43,42 @@ pub fn c(colour: &str, s: &str) -> String {
     }
 }
 
-/// Ask a Windows console to interpret ANSI escapes. No-op elsewhere, and
-/// harmless if it fails — we simply get uncoloured output.
+/// Decide whether this terminal can render ANSI escapes.
+///
+/// This used to shell out to `cmd /c ver` to "nudge" the console into VT mode.
+/// That was wrong twice over: the mode change applies to the child, not to us,
+/// so it achieved nothing - and it spawned a visible console window on every
+/// single invocation. Modern Windows terminals (Windows Terminal, VS Code,
+/// Cursor) are in VT mode already; the legacy conhost is not, and there it is
+/// better to print no escapes than mojibake.
 pub fn enable_ansi() {
     #[cfg(windows)]
     {
-        // `cmd /c ver` is enough to nudge the console into VT mode on the
-        // Windows versions that need it; newer ones are already in VT mode.
-        let _ = Command::new("cmd").args(["/c", "ver"]).output();
+        let modern = std::env::var("WT_SESSION").is_ok()
+            || std::env::var("TERM_PROGRAM").is_ok()
+            || std::env::var("ConEmuANSI").map(|v| v == "ON").unwrap_or(false)
+            || std::env::var("TERM").is_ok();
+        if !modern {
+            set_colour(false);
+        }
     }
 }
+
+/// Suppress the console window a child process would otherwise flash up.
+///
+/// Without this, a background service that shells out - and this one calls
+/// `powershell` to enumerate processes and `git` to read refs - throws a black
+/// window on screen every time, which is both alarming and impossible to work
+/// through. `CREATE_NO_WINDOW` keeps the child headless.
+#[cfg(windows)]
+fn hide_window(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_window(_cmd: &mut Command) {}
 
 // ---------------------------------------------------------------------------
 // Time
@@ -127,7 +153,10 @@ pub struct Output {
 /// Run a command, capturing output. Never panics: a missing binary comes back
 /// as `ok: false` with the error in `stderr`.
 pub fn run(program: &str, args: &[&str]) -> Output {
-    match Command::new(program).args(args).output() {
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    hide_window(&mut cmd);
+    match cmd.output() {
         Ok(o) => Output {
             ok: o.status.success(),
             stdout: String::from_utf8_lossy(&o.stdout).into_owned(),

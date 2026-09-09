@@ -287,6 +287,35 @@ fn looks_binary(data: &[u8]) -> bool {
     data.iter().take(8192).any(|&b| b == 0)
 }
 
+/// Decode a UTF-16 file to UTF-8, if that is what it is.
+///
+/// A UTF-16 source file is half NUL bytes, so `looks_binary` calls it binary and
+/// the scan skips it entirely. That is a blind spot worth closing: a config
+/// re-saved as UTF-16 (which some editors and `Out-File` do by default on
+/// Windows) would carry a payload right past us. Found in the wild as a
+/// UTF-16LE `eslint.config.mjs` - benign in that instance, but invisible.
+fn decode_utf16(data: &[u8]) -> Option<String> {
+    let (body, big_endian) = match data {
+        [0xFF, 0xFE, rest @ ..] => (rest, false),
+        [0xFE, 0xFF, rest @ ..] => (rest, true),
+        _ => return None,
+    };
+    if body.len() < 2 {
+        return None;
+    }
+    let units: Vec<u16> = body
+        .chunks_exact(2)
+        .map(|c| {
+            if big_endian {
+                u16::from_be_bytes([c[0], c[1]])
+            } else {
+                u16::from_le_bytes([c[0], c[1]])
+            }
+        })
+        .collect();
+    String::from_utf16(&units).ok()
+}
+
 /// Phrases that only appear in a scanner: the signatures are sitting inside a
 /// search pattern, not inside executable payload.
 const DETECTOR_IDIOMS: &[&str] = &[
@@ -408,7 +437,33 @@ pub fn scan_file(path: &Path) -> Option<Finding> {
         }
     };
     if looks_binary(&data) {
-        return None;
+        // Might be UTF-16 rather than genuinely binary.
+        let text = decode_utf16(&data)?;
+        let bytes = text.as_bytes();
+        if crate::signatures::contains_marker(bytes, DETECTOR_MARKER)
+            || looks_like_detector_logic(bytes)
+        {
+            return None;
+        }
+        let mut hits = refine(path, signatures::scan(bytes));
+        if hits.is_empty() {
+            return None;
+        }
+        // Offsets refer to the decoded text, not the file, so the byte-splicing
+        // healer must not touch it. Flag that explicitly instead of guessing.
+        hits.push(Hit {
+            ioc: "utf16-encoded",
+            sev: Severity::Suspicious,
+            why: "UTF-16 source; indicators found in the decoded text, so clean this one by hand",
+            start: 0,
+            end: 0,
+            line: 0,
+        });
+        return Some(Finding {
+            path: path.to_path_buf(),
+            hits,
+            note: Some("file is UTF-16 encoded; automatic removal is disabled for it".into()),
+        });
     }
     // A file that declares itself a detector is exempt, wherever it lives.
     if crate::signatures::contains_marker(&data, DETECTOR_MARKER)
@@ -559,6 +614,34 @@ mod tests {
 
     fn hit(ioc: &'static str, sev: Severity) -> Hit {
         Hit { ioc, sev, why: "", start: 0, end: 1, line: 1 }
+    }
+
+    #[test]
+    fn utf16_is_decoded_not_dismissed_as_binary() {
+        // UTF-16LE with BOM: "global.i = 'A8-2941';"
+        let text = "global.i = 'A8-2941';";
+        let mut data = vec![0xFF, 0xFE];
+        for u in text.encode_utf16() {
+            data.extend_from_slice(&u.to_le_bytes());
+        }
+        assert!(looks_binary(&data), "half of it is NUL bytes");
+        let decoded = decode_utf16(&data).expect("should decode");
+        assert_eq!(decoded, text);
+        assert!(signatures::has_critical(decoded.as_bytes()));
+    }
+
+    #[test]
+    fn utf16_big_endian_decodes_too() {
+        let mut data = vec![0xFE, 0xFF];
+        for u in "abc".encode_utf16() {
+            data.extend_from_slice(&u.to_be_bytes());
+        }
+        assert_eq!(decode_utf16(&data).as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn genuine_binary_is_not_mistaken_for_utf16() {
+        assert!(decode_utf16(&[0x7f, 0x45, 0x4c, 0x46, 0x00]).is_none());
     }
 
     #[test]
