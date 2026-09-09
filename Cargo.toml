@@ -1,0 +1,23 @@
+[package]
+name = "polinrider-hunter"
+version = "1.0.0"
+edition = "2021"
+description = "Detects and removes the PolinRider supply-chain malware from developer machines and git repositories."
+license = "MIT"
+
+[[bin]]
+name = "polinrider-hunter"
+path = "src/main.rs"
+
+# Deliberately zero dependencies: the binary must build offline on any machine
+# with a Rust toolchain, and must not itself become a supply-chain risk. Anything
+# we would have pulled a crate for (regex, file watching, JSON) is a small,
+# purpose-built module in src/ instead.
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

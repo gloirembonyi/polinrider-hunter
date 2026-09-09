@@ -1,0 +1,492 @@
+//! PolinRider indicators of compromise, and the matcher that finds them.
+//!
+//! Everything here is byte-oriented on purpose. Payloads are appended to source
+//! files that may be any encoding and any line ending, and the healer needs an
+//! exact byte offset to cut at, so we never decode to `String`.
+
+/// How much we trust a hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// Unambiguous PolinRider. Safe to remove automatically.
+    Critical,
+    /// Consistent with PolinRider but plausible in honest code. Report, never auto-cut.
+    Suspicious,
+}
+
+/// The shape of a single indicator.
+#[derive(Debug, Clone, Copy)]
+pub enum Kind {
+    /// Case-sensitive literal byte sequence.
+    Lit(&'static str),
+    /// ASCII-case-insensitive literal byte sequence.
+    LitCi(&'static str),
+    /// `global.i` then optional spaces/tabs then `=`.
+    ///
+    /// The variant that evaded every previous gate wrote `global.i = '...'`
+    /// with spaces, while the old patterns matched only `global.i=`.
+    GlobalIAssign,
+    /// Campaign tag: `A8-` or `A9-` followed by four digits (`A9-4221`, `A8-2941`).
+    CampaignId,
+    /// `allowAutomaticTasks` set to an *enabling* value.
+    ///
+    /// The setting existing is not the problem - projects hardened against the
+    /// folderOpen variant set it to "off" on purpose, and flagging that would
+    /// punish exactly the right behaviour. Only `true` / `"on"` arms a task.
+    AutoTasksEnabled,
+    /// A run of at least N spaces/tabs followed by a non-whitespace byte.
+    ///
+    /// This is the variant-agnostic one. Every sample so far hides its payload
+    /// behind ~500 characters of padding so the code sits off the right edge of
+    /// the editor and stays invisible in review. A future variant can change
+    /// every string it contains but not this, without giving up its camouflage.
+    Padding(usize),
+}
+
+pub struct Ioc {
+    pub id: &'static str,
+    pub sev: Severity,
+    pub why: &'static str,
+    pub kind: Kind,
+}
+
+/// The indicator table.
+///
+/// Order does not matter; the matcher reports hits sorted by file offset.
+pub static IOCS: &[Ioc] = &[
+    // ---- stage-1 loader internals -------------------------------------------------
+    Ioc {
+        id: "eth-dead-drop-sender",
+        sev: Severity::Critical,
+        why: "hardcoded Ethereum sender the loader reads its C2 address from",
+        kind: Kind::LitCi("0xa322e5f3"),
+    },
+    Ioc {
+        id: "payload-header",
+        sev: Severity::Critical,
+        why: "X-Payload-B64 response header carrying the XOR-encrypted stage 2",
+        kind: Kind::LitCi("x-payload-b64"),
+    },
+    Ioc {
+        id: "stage2-path-cls",
+        sev: Severity::Critical,
+        why: "stage-2 download path /0x/cls",
+        kind: Kind::Lit("/0x/cls"),
+    },
+    Ioc {
+        id: "stage2-path-ls",
+        sev: Severity::Critical,
+        why: "stage-2 download path /0x/ls",
+        kind: Kind::Lit("/0x/ls"),
+    },
+    Ioc {
+        id: "global-i-assign",
+        sev: Severity::Critical,
+        why: "loader campaign marker `global.i = ...` (matches with or without spaces)",
+        kind: Kind::GlobalIAssign,
+    },
+    Ioc {
+        id: "campaign-id",
+        sev: Severity::Critical,
+        why: "PolinRider campaign tag A8-nnnn / A9-nnnn",
+        kind: Kind::CampaignId,
+    },
+    // ---- obfuscator artefacts -----------------------------------------------------
+    Ioc {
+        id: "global-bang",
+        sev: Severity::Critical,
+        why: "obfuscated variant entry point global['!']",
+        kind: Kind::Lit("global['!']"),
+    },
+    Ioc {
+        id: "shuffle-decoder",
+        sev: Severity::Critical,
+        why: "string-shuffle decoder function _$_1e42",
+        kind: Kind::Lit("_$_1e42"),
+    },
+    Ioc {
+        id: "shuffle-modulus",
+        sev: Severity::Critical,
+        why: "modulus 4573868 used by the string-shuffle decoder",
+        kind: Kind::Lit("4573868"),
+    },
+    Ioc {
+        id: "hex-string-array",
+        sev: Severity::Critical,
+        why: "javascript-obfuscator hex string-array accessor parseInt(_0x",
+        kind: Kind::Lit("parseInt(_0x"),
+    },
+    // ---- the src/main.ts dropper --------------------------------------------------
+    Ioc {
+        id: "auth-api-key",
+        sev: Severity::Critical,
+        why: "AUTH_API_KEY, the base64 C2 URL the eval dropper decodes",
+        kind: Kind::Lit("AUTH_API_KEY"),
+    },
+    Ioc {
+        id: "eval-proxyinfo",
+        sev: Severity::Critical,
+        why: "eval(proxyInfo) — remote code execution in the dropper",
+        kind: Kind::Lit("eval(proxyInfo)"),
+    },
+    Ioc {
+        id: "atob-env",
+        sev: Severity::Critical,
+        why: "atob(process.env...) decoding a C2 URL out of the environment",
+        kind: Kind::Lit("atob(process.env."),
+    },
+    Ioc {
+        id: "c2-vercel",
+        sev: Severity::Critical,
+        why: "known C2 host auth-confirm-eight.vercel.app",
+        kind: Kind::LitCi("auth-confirm-eight"),
+    },
+    // ---- the VS Code autorun variant ----------------------------------------------
+    Ioc {
+        id: "font-payload",
+        sev: Severity::Critical,
+        why: "payload disguised as a webfont and executed by node",
+        kind: Kind::Lit("node ./public/fonts"),
+    },
+    // ---- structural ---------------------------------------------------------------
+    Ioc {
+        id: "padding-run",
+        sev: Severity::Critical,
+        why: "long space/tab pad hiding appended code off the right edge of the editor",
+        kind: Kind::Padding(200),
+    },
+    // ---- corroborating, not conclusive --------------------------------------------
+    Ioc {
+        id: "eth-rpc-block",
+        sev: Severity::Suspicious,
+        why: "Ethereum block lookup — how the loader resolves its C2",
+        kind: Kind::Lit("eth_getBlockByNumber"),
+    },
+    Ioc {
+        id: "eth-rpc-nonce",
+        sev: Severity::Suspicious,
+        why: "Ethereum nonce lookup used to binary-search the dead-drop tx",
+        kind: Kind::Lit("eth_getTransactionCount"),
+    },
+    Ioc {
+        id: "rpc-publicnode",
+        sev: Severity::Suspicious,
+        why: "public Ethereum RPC endpoint used by the loader",
+        kind: Kind::LitCi("ethereum-rpc.publicnode.com"),
+    },
+    Ioc {
+        id: "rpc-drpc",
+        sev: Severity::Suspicious,
+        why: "public Ethereum RPC endpoint used by the loader",
+        kind: Kind::LitCi("eth.drpc.org"),
+    },
+    Ioc {
+        id: "rpc-1rpc",
+        sev: Severity::Suspicious,
+        why: "public Ethereum RPC endpoint used by the loader",
+        kind: Kind::LitCi("1rpc.io/eth"),
+    },
+    Ioc {
+        id: "rpc-blastapi",
+        sev: Severity::Suspicious,
+        why: "public Ethereum RPC endpoint used by the loader",
+        kind: Kind::LitCi("eth-mainnet.public.blastapi.io"),
+    },
+    Ioc {
+        id: "hidden-spawn",
+        sev: Severity::Suspicious,
+        why: "windowsHide — how stage 2 is spawned without a visible console",
+        kind: Kind::Lit("windowsHide"),
+    },
+    Ioc {
+        id: "vscode-autorun",
+        sev: Severity::Suspicious,
+        why: "task runs on folderOpen; the autorun variant arms itself this way",
+        kind: Kind::Lit("folderOpen"),
+    },
+    Ioc {
+        id: "vscode-allow-autorun",
+        sev: Severity::Suspicious,
+        why: "task.allowAutomaticTasks is enabled, which arms a folderOpen task",
+        kind: Kind::AutoTasksEnabled,
+    },
+];
+
+/// An extended-regex approximation of the critical set, for `git grep`.
+///
+/// `git grep` runs inside the object database, which lets us audit every branch
+/// without checking anything out. It cannot call our matcher, so it gets this
+/// equivalent pattern; anything it flags is then confirmed with the real matcher
+/// against the blob contents.
+pub const GIT_GREP_ERE: &str = concat!(
+    "0xa322[Ee]5f3",
+    "|[Xx]-[Pp]ayload-[Bb]64",
+    "|/0x/cls|/0x/ls",
+    "|global\\.i[[:space:]]*=",
+    "|A[89]-[0-9]{4}",
+    "|global\\['!'\\]",
+    "|_\\$_1e42",
+    "|4573868",
+    "|parseInt\\(_0x",
+    "|AUTH_API_KEY",
+    "|eval\\(proxyInfo\\)",
+    "|atob\\(process\\.env\\.",
+    "|auth-confirm-eight",
+    "|node \\./public/fonts",
+    "|( {200,}|\t{200,})[^[:space:]]",
+);
+
+/// The id of the structural indicator, whose severity is context-dependent.
+pub const PADDING_IOC: &str = "padding-run";
+
+/// Indicators that are only meaningful next to another one.
+///
+/// `windowsHide` and a `folderOpen` task are both entirely normal in honest
+/// tooling - editor extensions and dev scripts use them constantly. As the sole
+/// finding in a file they are noise; alongside a real indicator they are useful
+/// context about how the payload runs. So they are reported only in company.
+pub const CORROBORATING: &[&str] = &["hidden-spawn", "vscode-autorun"];
+
+#[derive(Debug, Clone)]
+pub struct Hit {
+    pub ioc: &'static str,
+    pub sev: Severity,
+    pub why: &'static str,
+    /// Byte offset where the match begins.
+    pub start: usize,
+    /// Byte offset one past the end of the match.
+    pub end: usize,
+    /// 1-based line the match begins on.
+    pub line: usize,
+}
+
+/// Find every indicator in `data`, sorted by offset.
+pub fn scan(data: &[u8]) -> Vec<Hit> {
+    let mut hits: Vec<Hit> = Vec::new();
+    for ioc in IOCS {
+        if let Some((start, end)) = find(data, ioc.kind) {
+            hits.push(Hit {
+                ioc: ioc.id,
+                sev: ioc.sev,
+                why: ioc.why,
+                start,
+                end,
+                line: 0,
+            });
+        }
+    }
+    hits.sort_by_key(|h| h.start);
+    for h in hits.iter_mut() {
+        h.line = line_of(data, h.start);
+    }
+    hits
+}
+
+/// True if `data` contains the detector opt-out marker.
+///
+/// This file is the obvious first customer: it lists every string we hunt for,
+/// so without the marker below the hunter would cheerfully quarantine its own
+/// source. Marker: POLINRIDER-HUNTER-DETECTOR
+pub fn contains_marker(data: &[u8], marker: &str) -> bool {
+    find_lit(data, marker.as_bytes()).is_some()
+}
+
+/// True if `data` carries at least one critical indicator.
+pub fn has_critical(data: &[u8]) -> bool {
+    IOCS.iter()
+        .filter(|i| i.sev == Severity::Critical)
+        .any(|i| find(data, i.kind).is_some())
+}
+
+/// First offset of a given indicator kind.
+fn find(data: &[u8], kind: Kind) -> Option<(usize, usize)> {
+    match kind {
+        Kind::Lit(s) => find_lit(data, s.as_bytes()).map(|i| (i, i + s.len())),
+        Kind::LitCi(s) => find_lit_ci(data, s.as_bytes()).map(|i| (i, i + s.len())),
+        Kind::GlobalIAssign => find_global_i_assign(data),
+        Kind::CampaignId => find_campaign_id(data),
+        Kind::AutoTasksEnabled => find_auto_tasks_enabled(data),
+        Kind::Padding(n) => find_padding(data, n),
+    }
+}
+
+/// `allowAutomaticTasks` whose value enables it.
+fn find_auto_tasks_enabled(data: &[u8]) -> Option<(usize, usize)> {
+    let pat = b"allowAutomaticTasks";
+    let mut from = 0usize;
+    while let Some(rel) = find_lit(&data[from..], pat) {
+        let start = from + rel;
+        // Look at the short window after the key for its value.
+        let tail_end = (start + pat.len() + 24).min(data.len());
+        let tail = &data[start + pat.len()..tail_end];
+        if find_lit(tail, b"true").is_some() || find_lit_ci(tail, b"\"on\"").is_some() {
+            return Some((start, start + pat.len()));
+        }
+        from = start + 1;
+    }
+    None
+}
+
+fn find_lit(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+fn find_lit_ci(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    hay.windows(needle.len()).position(|w| {
+        w.iter()
+            .zip(needle)
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+    })
+}
+
+/// `global.i` + optional spaces/tabs + `=`.
+fn find_global_i_assign(data: &[u8]) -> Option<(usize, usize)> {
+    let pat = b"global.i";
+    let mut from = 0usize;
+    while let Some(rel) = find_lit(&data[from..], pat) {
+        let start = from + rel;
+        let mut j = start + pat.len();
+        while j < data.len() && (data[j] == b' ' || data[j] == b'\t') {
+            j += 1;
+        }
+        // `==` is a comparison, not the loader's assignment.
+        if j < data.len() && data[j] == b'=' && data.get(j + 1) != Some(&b'=') {
+            return Some((start, j + 1));
+        }
+        from = start + 1;
+    }
+    None
+}
+
+/// `A8-1234` / `A9-1234`.
+fn find_campaign_id(data: &[u8]) -> Option<(usize, usize)> {
+    if data.len() < 7 {
+        return None;
+    }
+    for i in 0..=data.len() - 7 {
+        if data[i] == b'A'
+            && (data[i + 1] == b'8' || data[i + 1] == b'9')
+            && data[i + 2] == b'-'
+            && data[i + 3..i + 7].iter().all(|b| b.is_ascii_digit())
+        {
+            return Some((i, i + 7));
+        }
+    }
+    None
+}
+
+/// A run of >= `min` spaces/tabs followed by a non-whitespace byte.
+///
+/// Returns the offset of the *start of the run*, which is exactly where the
+/// healer should cut: it removes the camouflage along with the payload.
+fn find_padding(data: &[u8], min: usize) -> Option<(usize, usize)> {
+    let mut i = 0usize;
+    while i < data.len() {
+        if data[i] == b' ' || data[i] == b'\t' {
+            let start = i;
+            while i < data.len() && (data[i] == b' ' || data[i] == b'\t') {
+                i += 1;
+            }
+            let run = i - start;
+            let next_is_code = i < data.len() && data[i] != b'\r' && data[i] != b'\n';
+            if run >= min && next_is_code {
+                return Some((start, i));
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+fn line_of(data: &[u8], offset: usize) -> usize {
+    1 + data[..offset.min(data.len())]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spaced_global_i_is_caught() {
+        // The exact form that evaded every previous gate.
+        assert!(has_critical(b"export default config;   global.i = 'A8-2941';"));
+    }
+
+    #[test]
+    fn tight_global_i_is_caught() {
+        assert!(has_critical(b"global.i=\"A9-4221\";"));
+    }
+
+    #[test]
+    fn comparison_is_not_an_assignment() {
+        assert!(find_global_i_assign(b"if (global.i == 3) {}").is_none());
+    }
+
+    #[test]
+    fn padding_needs_trailing_code() {
+        let mut trailing = b"const a = 1;".to_vec();
+        trailing.extend(std::iter::repeat(b' ').take(400));
+        // Trailing whitespace alone is untidy, not malicious.
+        assert!(find_padding(&trailing, 200).is_none());
+        trailing.extend_from_slice(b"payload()");
+        assert!(find_padding(&trailing, 200).is_some());
+    }
+
+    #[test]
+    fn padding_cut_point_is_the_run_start() {
+        let mut v = b"};".to_vec();
+        let pad = 300;
+        v.extend(std::iter::repeat(b'\t').take(pad));
+        v.extend_from_slice(b"evil()");
+        let (start, _) = find_padding(&v, 200).unwrap();
+        assert_eq!(start, 2);
+    }
+
+    #[test]
+    fn auto_tasks_off_is_not_a_hit() {
+        // "off" is the hardened setting; flagging it would punish the fix.
+        assert!(find_auto_tasks_enabled(br#""task.allowAutomaticTasks": "off","#).is_none());
+        assert!(find_auto_tasks_enabled(br#""task.allowAutomaticTasks": false"#).is_none());
+    }
+
+    #[test]
+    fn auto_tasks_on_is_a_hit() {
+        assert!(find_auto_tasks_enabled(br#""task.allowAutomaticTasks": true"#).is_some());
+        assert!(find_auto_tasks_enabled(br#""task.allowAutomaticTasks": "on""#).is_some());
+    }
+
+    #[test]
+    fn clean_config_has_no_hits() {
+        let ok = b"module.exports = { plugins: { tailwindcss: {} } };\n";
+        assert!(!has_critical(ok));
+    }
+
+    #[test]
+    fn campaign_ids() {
+        assert!(find_campaign_id(b"x A9-4221 y").is_some());
+        assert!(find_campaign_id(b"A8-2941").is_some());
+        assert!(find_campaign_id(b"A7-1234").is_none());
+        assert!(find_campaign_id(b"A9-12").is_none());
+    }
+
+    #[test]
+    fn case_insensitive_address() {
+        assert!(has_critical(b"SENDER=\"0xA322E5F3D311D3080e\""));
+    }
+
+    #[test]
+    fn line_numbers_are_one_based() {
+        assert_eq!(line_of(b"a\nb\nc", 0), 1);
+        assert_eq!(line_of(b"a\nb\nc", 2), 2);
+        assert_eq!(line_of(b"a\nb\nc", 4), 3);
+    }
+}
