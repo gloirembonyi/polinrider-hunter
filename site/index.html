@@ -169,6 +169,11 @@ curl -fsSL <span data-origin>https://polinrider-hunter.vercel.app</span>/install
         If you would rather not pipe anything, clone the repository and run
         <code>cargo build --release</code>; the binary works standalone.
       </p>
+      <p class="small" style="margin-bottom:0">
+        Want the binary but not the rest? <code>POLINRIDER_NO_HUNT=1</code> skips the
+        initial sweep and <code>POLINRIDER_NO_INSTALL=1</code> skips the background
+        guard, so you can install it and decide later.
+      </p>
     </div>
 
     <h3 style="margin-top:38px">Already have the binary?</h3>

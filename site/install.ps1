@@ -20,6 +20,11 @@ $ErrorActionPreference = 'Stop'
 # CHANGE THIS ONE LINE if you deploy the site to your own domain.
 # ---------------------------------------------------------------------------
 $Site = if ($env:POLINRIDER_SITE) { $env:POLINRIDER_SITE.TrimEnd('/') } else { 'https://polinrider-hunter.vercel.app' }
+
+# Set either of these to 1 to stop after installing the binary. Useful in CI, and
+# for anyone who wants the tool on PATH without it sweeping or starting a guard.
+$SkipHunt  = $env:POLINRIDER_NO_HUNT -eq '1'
+$SkipGuard = $env:POLINRIDER_NO_INSTALL -eq '1'
 $Repo = if ($env:POLINRIDER_REPO) { $env:POLINRIDER_REPO } else { '' }
 
 $Asset      = 'polinrider-hunter-windows-x86_64.exe'
@@ -129,17 +134,28 @@ $env:Path = "$env:Path;$InstallDir"
 # ---------------------------------------------------------------------------
 # 3. Clean the machine now
 # ---------------------------------------------------------------------------
-Step 'Hunting for PolinRider across this machine'
-Info 'this reads every candidate file under your home directory; it prints each'
-Info 'directory as it goes, and runs at background priority'
-& $Exe hunt
-$huntCode = $LASTEXITCODE
+$huntCode = 0
+if ($SkipHunt) {
+    Step 'Skipping the hunt (POLINRIDER_NO_HUNT=1)'
+    Info 'run it yourself with: polinrider-hunter hunt'
+} else {
+    Step 'Hunting for PolinRider across this machine'
+    Info 'this reads every candidate file under your home directory; it prints each'
+    Info 'directory as it goes, and runs at background priority'
+    & $Exe hunt
+    $huntCode = $LASTEXITCODE
+}
 
 # ---------------------------------------------------------------------------
 # 4. Keep it clean
 # ---------------------------------------------------------------------------
-Step 'Setting up the background guard'
-& $Exe install
+if ($SkipGuard) {
+    Step 'Skipping the background guard (POLINRIDER_NO_INSTALL=1)'
+    Info 'set it up later with: polinrider-hunter install'
+} else {
+    Step 'Setting up the background guard'
+    & $Exe install
+}
 
 Write-Host "`nDone." -ForegroundColor Green
 Write-Host @"

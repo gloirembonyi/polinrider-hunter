@@ -10,28 +10,52 @@ Rust standard library, on purpose.
 
 ## Install
 
+The page at [`site/`](site/) carries the installers and a prebuilt Windows
+binary, so once it is deployed the one-liner works with no GitHub release
+involved.
+
 **Windows** (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/OWNER/polinrider-hunter/main/install.ps1 | iex
+irm https://your-domain/install.ps1 | iex
 ```
 
 **Linux / macOS**:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/OWNER/polinrider-hunter/main/install.sh | sh
+curl -fsSL https://your-domain/install.sh | sh
 ```
 
-Either installs the binary to a user directory (no administrator or root),
-sweeps the whole machine and cleans what it finds, then registers the background
-guard. Run it once. Replace `OWNER` with wherever the repository lives, or set
-`POLINRIDER_REPO`.
+Either puts the binary in a user directory (no administrator or root), sweeps the
+whole machine and cleans what it finds, then registers the background guard. Run
+it once.
 
-Both prefer a published release binary and fall back to building from source
-with `cargo`; if neither is possible they say exactly what is missing rather
-than failing quietly.
+Each prefers the prebuilt binary published next to the script, falls back to a
+GitHub release when `POLINRIDER_REPO` is set, and finally to building from source
+with `cargo` — and when none of those is possible it says which, rather than
+failing quietly. It also verifies that what it downloaded is genuinely an
+executable, because a static host answers `200` with an HTML error page for a
+missing path and piping that into place would be worse than failing.
 
-Already have the binary?
+Environment overrides:
+
+| | |
+|---|---|
+| `POLINRIDER_SITE` | where to fetch the binary from (default: the deployed site) |
+| `POLINRIDER_REPO` | `owner/repo`, to enable the release and source-build paths |
+| `POLINRIDER_NO_HUNT=1` | install the binary but skip the initial sweep |
+| `POLINRIDER_NO_INSTALL=1` | install the binary but do not start the guard |
+| `POLINRIDER_BIN` | install directory (unix; default `~/.local/bin`) |
+
+No binary yet, or building it yourself?
+
+```
+cargo build --release
+./target/release/polinrider-hunter hunt      # clean this machine now
+./target/release/polinrider-hunter install   # then keep it clean
+```
+
+Already have it on PATH?
 
 ```
 polinrider-hunter hunt             # clean this machine now, no setup needed
@@ -335,6 +359,22 @@ platform process API and cannot be fooled by PID reuse.
 
 Override with `POLINRIDER_HOME`. `config.txt` is `key = value`, hand-editable,
 with `path` repeating once per directory.
+
+---
+
+## The page
+
+[`site/`](site/) is a static page — `index.html`, `styles.css`, `app.js`, no
+build step — that explains all of this to someone who has just been told their
+machine might be infected. It carries the installers and the Windows binary, so
+deploying it is what makes the one-liner work.
+
+```sh
+cd site && vercel --prod       # or: Root Directory = site, Framework = Other
+```
+
+See [`site/README.md`](site/README.md) for the one line to change afterwards and
+how to add macOS and Linux binaries.
 
 ---
 

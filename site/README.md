@@ -58,6 +58,18 @@ Both also honour an override, which is handy for testing a preview deployment:
 POLINRIDER_SITE=https://my-preview.vercel.app sh install.sh
 ```
 
+Both scripts also take:
+
+| | |
+|---|---|
+| `POLINRIDER_SITE` | where to fetch the binary from — handy for a preview deploy |
+| `POLINRIDER_REPO` | `owner/repo`, to enable the release and source-build fallbacks |
+| `POLINRIDER_NO_HUNT=1` | install the binary, skip the initial machine sweep |
+| `POLINRIDER_NO_INSTALL=1` | install the binary, do not start the guard |
+
+The last two make the installer usable in CI, and testable without waiting for a
+full sweep.
+
 ---
 
 ## Serving the binary

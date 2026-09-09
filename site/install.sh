@@ -21,6 +21,11 @@ SITE="${POLINRIDER_SITE:-https://polinrider-hunter.vercel.app}"
 SITE="${SITE%/}"
 REPO="${POLINRIDER_REPO:-}"
 
+# Set either of these to 1 to stop after installing the binary. Useful in CI, and
+# for anyone who wants the tool on PATH without it sweeping or starting a guard.
+SKIP_HUNT="${POLINRIDER_NO_HUNT:-0}"
+SKIP_GUARD="${POLINRIDER_NO_INSTALL:-0}"
+
 INSTALL_DIR="${POLINRIDER_BIN:-$HOME/.local/bin}"
 EXE="$INSTALL_DIR/polinrider-hunter"
 
@@ -153,17 +158,27 @@ esac
 # ---------------------------------------------------------------------------
 # 3. Clean the machine now
 # ---------------------------------------------------------------------------
-step 'Hunting for PolinRider across this machine'
-info 'this reads every candidate file under your home directory; it prints each'
-info 'directory as it goes, and runs at background priority'
 hunt_code=0
-"$EXE" hunt || hunt_code=$?
+if [ "$SKIP_HUNT" = "1" ]; then
+    step 'Skipping the hunt (POLINRIDER_NO_HUNT=1)'
+    info 'run it yourself with: polinrider-hunter hunt'
+else
+    step 'Hunting for PolinRider across this machine'
+    info 'this reads every candidate file under your home directory; it prints each'
+    info 'directory as it goes, and runs at background priority'
+    "$EXE" hunt || hunt_code=$?
+fi
 
 # ---------------------------------------------------------------------------
 # 4. Keep it clean
 # ---------------------------------------------------------------------------
-step 'Setting up the background guard'
-"$EXE" install || true
+if [ "$SKIP_GUARD" = "1" ]; then
+    step 'Skipping the background guard (POLINRIDER_NO_INSTALL=1)'
+    info 'set it up later with: polinrider-hunter install'
+else
+    step 'Setting up the background guard'
+    "$EXE" install || true
+fi
 
 printf '\n%bDone.%b\n' "$C_GREEN" "$C_OFF"
 cat <<EOF
