@@ -147,6 +147,211 @@ pub static IOCS: &[Ioc] = &[
         why: "payload disguised as a webfont and executed by node",
         kind: Kind::Lit("node ./public/fonts"),
     },
+    // ---- second obfuscator variant (April 2026) -----------------------------------
+    //
+    // Same four-layer shuffle cipher, same blockchain dead drop, every unique
+    // string rotated. Both variants are live, and at least one victim carried
+    // markers from each in different files.
+    Ioc {
+        id: "obf-marker-v1",
+        sev: Severity::Critical,
+        why: "first-variant obfuscator marker rmcej%otb%",
+        kind: Kind::Lit("rmcej%otb%"),
+    },
+    Ioc {
+        id: "obf-marker-v2",
+        sev: Severity::Critical,
+        why: "second-variant obfuscator marker Cot%3t=shtP",
+        kind: Kind::Lit("Cot%3t=shtP"),
+    },
+    Ioc {
+        id: "shuffle-seed-v1a",
+        sev: Severity::Critical,
+        why: "first-variant shuffle seed 2857687",
+        kind: Kind::Lit("2857687"),
+    },
+    Ioc {
+        id: "shuffle-seed-v1b",
+        sev: Severity::Critical,
+        why: "first-variant secondary shuffle seed 2667686",
+        kind: Kind::Lit("2667686"),
+    },
+    Ioc {
+        id: "shuffle-seed-v2a",
+        sev: Severity::Critical,
+        why: "second-variant shuffle seed 1111436",
+        kind: Kind::Lit("1111436"),
+    },
+    Ioc {
+        id: "shuffle-seed-v2b",
+        sev: Severity::Critical,
+        why: "second-variant secondary shuffle seed 3896884",
+        kind: Kind::Lit("3896884"),
+    },
+    Ioc {
+        id: "global-v-marker",
+        sev: Severity::Critical,
+        why: "second-variant injection marker global['_V'] - the version tag it stamps",
+        kind: Kind::Lit("global['_V']"),
+    },
+    // ---- blockchain dead drops beyond Ethereum ------------------------------------
+    Ioc {
+        id: "tron-dead-drop-1",
+        sev: Severity::Critical,
+        why: "TRON dead-drop account the loader reads its C2 from",
+        kind: Kind::Lit("TMfKQEd7TJJa5xNZJZ2Lep838vrzrs7mAP"),
+    },
+    Ioc {
+        id: "tron-dead-drop-2",
+        sev: Severity::Critical,
+        why: "secondary TRON dead-drop account",
+        kind: Kind::Lit("TXfxHUet9pJVU1BgVkBAbrES4YUc1nGzcG"),
+    },
+    Ioc {
+        id: "aptos-dead-drop-1",
+        sev: Severity::Critical,
+        why: "Aptos transaction carrying an encrypted payload",
+        kind: Kind::LitCi("0xbe037400670fbf1c32364f762975908dc43eeb38759263e7dfcdabc76380811e"),
+    },
+    Ioc {
+        id: "aptos-dead-drop-2",
+        sev: Severity::Critical,
+        why: "second Aptos transaction carrying an encrypted payload",
+        kind: Kind::LitCi("0x3f0e5781d0855fb460661ac63257376db1941b2bb522499e4757ecb3ebd5dce3"),
+    },
+    // ---- XOR keys for the second stage --------------------------------------------
+    Ioc {
+        id: "xor-key-1",
+        sev: Severity::Critical,
+        why: "hardcoded XOR key used to decrypt stage 2",
+        kind: Kind::Lit("2[gWfGj;<:-93Z^C"),
+    },
+    Ioc {
+        id: "xor-key-2",
+        sev: Severity::Critical,
+        why: "second hardcoded XOR key used to decrypt stage 2",
+        kind: Kind::Lit("m6:tTh^D)cBz?NM]"),
+    },
+    Ioc {
+        id: "xor-key-3",
+        sev: Severity::Critical,
+        why: "XOR key from the Ethereum/NullReceiver variant",
+        kind: Kind::Lit("q4FZkxX{!h,Sr3=@"),
+    },
+    Ioc {
+        id: "xor-key-4",
+        sev: Severity::Critical,
+        why: "second XOR key from the Ethereum/NullReceiver variant",
+        kind: Kind::Lit("y-p_>d$0B&@^1aQk"),
+    },
+    // ---- the tasks.json / HTTP C2 vector ------------------------------------------
+    Ioc {
+        id: "c2-vercel-default-config",
+        sev: Severity::Critical,
+        why: "HTTP C2 host used by the .vscode/tasks.json vector",
+        kind: Kind::LitCi("default-configuration.vercel.app"),
+    },
+    Ioc {
+        id: "c2-vercel-260120",
+        sev: Severity::Critical,
+        why: "HTTP C2 host used by the .vscode/tasks.json vector",
+        kind: Kind::LitCi("260120.vercel.app"),
+    },
+    Ioc {
+        id: "c2-vercel-vscode",
+        sev: Severity::Critical,
+        why: "vscode-settings HTTP C2 host family",
+        kind: Kind::LitCi("vscode-settings-bootstrap.vercel.app"),
+    },
+    Ioc {
+        id: "c2-vercel-vscode-2",
+        sev: Severity::Critical,
+        why: "vscode-settings HTTP C2 host family",
+        kind: Kind::LitCi("vscode-settings-config.vercel.app"),
+    },
+    Ioc {
+        id: "c2-vercel-vscode-3",
+        sev: Severity::Critical,
+        why: "vscode-bootstrapper HTTP C2 host",
+        kind: Kind::LitCi("vscode-bootstrapper.vercel.app"),
+    },
+    Ioc {
+        id: "c2-vercel-vscode-4",
+        sev: Severity::Critical,
+        why: "vscode-load-config HTTP C2 host",
+        kind: Kind::LitCi("vscode-load-config.vercel.app"),
+    },
+    Ioc {
+        id: "stakinggame-task-uuid",
+        sev: Severity::Critical,
+        why: "constant UUID in the StakingGame lure's .vscode/tasks.json",
+        kind: Kind::LitCi("e9b53a7c-2342-4b15-b02d-bd8b8f6a03f9"),
+    },
+    // ---- trojanized packages -------------------------------------------------------
+    //
+    // Typosquats of Tailwind/PostCSS utilities. Seeing one of these in a
+    // package.json or a lockfile is how the loader arrives in the first place.
+    Ioc {
+        id: "pkg-tailwindcss-style-animate",
+        sev: Severity::Critical,
+        why: "trojanized npm package tailwindcss-style-animate",
+        kind: Kind::LitCi("tailwindcss-style-animate"),
+    },
+    Ioc {
+        id: "pkg-tailwind-mainanimation",
+        sev: Severity::Critical,
+        why: "trojanized npm package tailwind-mainanimation",
+        kind: Kind::LitCi("tailwind-mainanimation"),
+    },
+    Ioc {
+        id: "pkg-tailwind-autoanimation",
+        sev: Severity::Critical,
+        why: "trojanized npm package tailwind-autoanimation",
+        kind: Kind::LitCi("tailwind-autoanimation"),
+    },
+    Ioc {
+        id: "pkg-tailwindcss-typography-style",
+        sev: Severity::Critical,
+        why: "trojanized npm package tailwindcss-typography-style",
+        kind: Kind::LitCi("tailwindcss-typography-style"),
+    },
+    Ioc {
+        id: "pkg-tailwindcss-style-modify",
+        sev: Severity::Critical,
+        why: "trojanized npm package tailwindcss-style-modify",
+        kind: Kind::LitCi("tailwindcss-style-modify"),
+    },
+    Ioc {
+        id: "pkg-tailwindcss-animate-style",
+        sev: Severity::Critical,
+        why: "trojanized npm package tailwindcss-animate-style",
+        kind: Kind::LitCi("tailwindcss-animate-style"),
+    },
+    // ---- corroborating: other chains' public RPC ----------------------------------
+    Ioc {
+        id: "rpc-tron",
+        sev: Severity::Suspicious,
+        why: "TRON API endpoint used to read the dead drop",
+        kind: Kind::LitCi("api.trongrid.io"),
+    },
+    Ioc {
+        id: "rpc-aptos",
+        sev: Severity::Suspicious,
+        why: "Aptos fullnode endpoint used to read the dead drop",
+        kind: Kind::LitCi("fullnode.mainnet.aptoslabs.com"),
+    },
+    Ioc {
+        id: "rpc-bsc",
+        sev: Severity::Suspicious,
+        why: "BNB Smart Chain RPC used to read the dead drop",
+        kind: Kind::LitCi("bsc-dataseed.binance.org"),
+    },
+    Ioc {
+        id: "rpc-bsc-2",
+        sev: Severity::Suspicious,
+        why: "BNB Smart Chain RPC used to read the dead drop",
+        kind: Kind::LitCi("bsc-rpc.publicnode.com"),
+    },
     // ---- structural ---------------------------------------------------------------
     Ioc {
         id: "padding-run",
@@ -674,6 +879,32 @@ mod tests {
         let d = b"xxxxglobal.i = 1";
         assert!(match_at(d, 0, Kind::GlobalIAssign).is_none());
         assert!(match_at(d, 4, Kind::GlobalIAssign).is_some());
+    }
+
+    #[test]
+    fn the_second_obfuscator_variant_is_recognised() {
+        assert!(reports(b"x Cot%3t=shtP y", "obf-marker-v2"));
+        assert!(reports(b"var s=1111436;", "shuffle-seed-v2a"));
+        assert!(reports(b"global['_V']='8-st4';", "global-v-marker"));
+    }
+
+    #[test]
+    fn other_chains_are_recognised() {
+        assert!(reports(b"TMfKQEd7TJJa5xNZJZ2Lep838vrzrs7mAP", "tron-dead-drop-1"));
+        assert!(reports(b"https://api.trongrid.io/v1/accounts", "rpc-tron"));
+        assert!(reports(b"bsc-dataseed.binance.org", "rpc-bsc"));
+    }
+
+    #[test]
+    fn trojanized_packages_are_recognised_in_a_manifest() {
+        let manifest = br#"{"dependencies":{"tailwindcss-style-animate":"^1.1.6"}}"#;
+        assert!(reports(manifest, "pkg-tailwindcss-style-animate"));
+    }
+
+    #[test]
+    fn the_tasks_json_http_c2_hosts_are_recognised() {
+        assert!(reports(b"https://default-configuration.vercel.app/settings/win?flag=3",
+                        "c2-vercel-default-config"));
     }
 
     #[test]

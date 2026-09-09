@@ -7,7 +7,8 @@
 use std::path::PathBuf;
 
 use polinrider_hunter::{
-    config, daemon, gitscan, healer, notify, procscan, report, scanner, service, util,
+    config, daemon, gitscan, healer, notify, persist, procscan, report, scanner, service,
+    util,
 };
 
 use config::Config;
@@ -80,6 +81,8 @@ fn main() {
         "protect" => cmd_protect(&args, &cfg),
         "unprotect" => cmd_unprotect(&args, &cfg),
         "procs" => cmd_procs(&args),
+        "persistence" => cmd_persistence(),
+        "log" | "logs" => cmd_log(&args),
         "daemon" => daemon::run(&cfg, args.has("--once")),
         "install" => cmd_install(&args, cfg),
         "uninstall" => cmd_uninstall(&args),
@@ -169,7 +172,22 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
         }
     }
 
-    // 2. Every file under every root, healing each hit as it turns up rather
+    // 2. Persistence: a loader that arranged to come back matters as much as
+    //    the files it left behind, and the check is nearly free.
+    let persist_hits = persist::check();
+    if !json {
+        for h in &persist_hits {
+            println!(
+                "  {} {}:{}",
+                util::c(YELLOW, "startup "),
+                h.location,
+                h.line_no
+            );
+            println!("      {}", util::c(DIM, h.why));
+        }
+    }
+
+    // 3. Every file under every root, healing each hit as it turns up rather
     //    than at the end: a machine-wide walk takes minutes, and an interrupted
     //    run should still have cleaned whatever it already reached.
     let mut healed = 0usize;
@@ -256,8 +274,20 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
         killed,
         healed,
         found,
-        manual.len() + noted
+        manual.len() + noted + persist_hits.len()
     );
+    if !persist_hits.is_empty() {
+        println!(
+            "{}",
+            util::c(
+                YELLOW,
+                &format!(
+                    "  {} startup location(s) need your eyes - run `polinrider-hunter persistence`",
+                    persist_hits.len()
+                )
+            )
+        );
+    }
     if !manual.is_empty() {
         println!("\n{}", util::c(YELLOW, "clean these by hand:"));
         for m in &manual {
@@ -434,6 +464,129 @@ fn cmd_unprotect(args: &Args, cfg: &Config) -> i32 {
         }
     }
     0
+}
+
+/// Show what the guard has been doing.
+///
+/// The commonest question about any background process is "is it actually doing
+/// anything?", and answering it should not mean hunting for a log file — or
+/// installing Python for the richer dashboard.
+fn cmd_log(args: &Args) -> i32 {
+    let path = config::log_path();
+    let follow = args.has("--follow") || args.has("-f");
+    let all = args.has("--all");
+
+    let read = || -> Vec<String> {
+        std::fs::read_to_string(&path)
+            .map(|t| t.lines().map(str::to_string).collect())
+            .unwrap_or_default()
+    };
+
+    let lines = read();
+    if lines.is_empty() {
+        println!("{}", util::c(DIM, &format!("no activity recorded yet ({})", path.display())));
+        println!(
+            "{}",
+            util::c(DIM, "An empty log is the good outcome: it only writes when it finds something.")
+        );
+        return 0;
+    }
+
+    let start = if all { 0 } else { lines.len().saturating_sub(40) };
+    if !all && start > 0 {
+        println!("{}", util::c(DIM, &format!("... {start} earlier line(s), use --all")));
+    }
+    for line in &lines[start..] {
+        println!("{}", colourise(line));
+    }
+
+    if !follow {
+        println!();
+        println!(
+            "{}",
+            util::c(
+                DIM,
+                "polinrider-hunter log --follow   watch it live\n\
+                 python tools/monitor.py          full dashboard (--web for a browser view)"
+            )
+        );
+        return 0;
+    }
+
+    // Polling rather than a filesystem watch: the guard appends a few lines a
+    // day at most, and a dependency-free watcher is not worth the complexity.
+    println!("{}", util::c(DIM, "-- following, Ctrl+C to stop --"));
+    let mut seen = lines.len();
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        let now = read();
+        if now.len() < seen {
+            seen = 0; // rotated or cleared
+        }
+        for line in now.iter().skip(seen) {
+            println!("{}", colourise(line));
+        }
+        seen = now.len();
+    }
+}
+
+/// Tint a log line by what kind of event it is, so a wall of text reads at a glance.
+fn colourise(line: &str) -> String {
+    if line.contains(" DETECT ") {
+        if line.contains("-> healed") || line.contains("-> deleted") {
+            util::c(GREEN, line)
+        } else {
+            util::c(RED, line)
+        }
+    } else if line.contains(" PROC ") {
+        util::c(RED, line)
+    } else if line.contains(" NOTICE ") || line.contains(" REF ") {
+        util::c(YELLOW, line)
+    } else {
+        util::c(DIM, line)
+    }
+}
+
+/// Look where the loader would arrange to come back from.
+fn cmd_persistence() -> i32 {
+    println!("{}", util::c(BOLD, "checking persistence locations"));
+    println!(
+        "{}",
+        util::c(
+            DIM,
+            "  shell startup files, scheduled jobs, login agents - the places the\n  \
+             published cleanup guidance says to check by hand"
+        )
+    );
+    let hits = persist::check();
+    println!();
+    if hits.is_empty() {
+        println!("{}", util::c(GREEN, "Nothing suspicious in any startup location."));
+        return 0;
+    }
+    for h in &hits {
+        println!(
+            "{} {}",
+            util::c(YELLOW, "REVIEW  "),
+            util::c(BOLD, &format!("{}:{}", h.location, h.line_no))
+        );
+        println!("    {}", util::c(DIM, h.why));
+        println!("    {}", h.line);
+    }
+    println!();
+    println!(
+        "{}",
+        util::c(
+            YELLOW,
+            &format!(
+                "{} line(s) to look at. Nothing was changed: these files are hand-maintained,\n\
+                 and editing someone's shell profile unasked breaks machines in ways that are\n\
+                 hard to trace back. Delete what you do not recognise.",
+                hits.len()
+            )
+        )
+    );
+    1
 }
 
 fn cmd_procs(args: &Args) -> i32 {
@@ -861,6 +1014,8 @@ Detects and removes the PolinRider supply-chain malware.
                          pre-commit hook, sweep them now, and start a background
                          guard that keeps doing it at every login. Run once.
   status                 Where everything lives and whether the guard is alive.
+  log                    What the guard has been doing. --follow to watch live,
+                         --all for the whole history.
   uninstall              Stop the guard and remove the hooks. --purge also
                          deletes the state directory, PATH entry and binary.
   test-notify            Send a notification, to check they reach you.
@@ -871,6 +1026,8 @@ Detects and removes the PolinRider supply-chain malware.
   repos [paths...]       Fetch and audit every branch of each repo, local and
                          remote-tracking, without pulling or checking out.
   procs                  List hidden stage-2 processes. --kill stops them.
+  persistence            Check shell profiles, cron and login agents for a
+                         way back in. Reports only; never edits them.
   protect [repos...]     Install just the pre-commit hook.
   unprotect [repos...]   Remove it.
   quarantine             List originals kept aside during healing.

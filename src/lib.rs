@@ -9,6 +9,7 @@ pub mod daemon;
 pub mod gitscan;
 pub mod healer;
 pub mod notify;
+pub mod persist;
 pub mod procscan;
 pub mod report;
 pub mod scanner;

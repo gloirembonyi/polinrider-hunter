@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>polinrider-hunter — find and remove the PolinRider malware</title>
-<meta name="description" content="A single 381 KB binary that detects and removes the PolinRider supply-chain malware from developer machines and git repositories, then keeps watching. Windows, macOS and Linux.">
+<meta name="description" content="A single 397 KB binary that detects and removes the PolinRider supply-chain malware from developer machines and git repositories, then keeps watching. Windows, macOS and Linux.">
 <meta name="color-scheme" content="dark light">
 <meta property="og:title" content="polinrider-hunter">
 <meta property="og:description" content="Find and remove the PolinRider supply-chain malware. One binary, no dependencies, runs in the background.">
@@ -58,7 +58,7 @@
   <div class="wrap">
     <div class="badge-row">
       <span class="badge badge--ok"><span class="dot"></span>Guard active on 7 repositories</span>
-      <span class="badge">381 KB binary</span>
+      <span class="badge">397 KB binary</span>
       <span class="badge">Zero dependencies</span>
       <span class="badge">72 tests</span>
     </div>
@@ -124,7 +124,7 @@ irm <span data-origin>https://gloirembonyi.github.io/polinrider-hunter</span>/in
             <button class="copy" type="button" aria-label="Copy command"></button>
           </div>
           <p class="pane__note">
-            Downloads a prebuilt 381&nbsp;KB binary — nothing to compile. Installs to
+            Downloads a prebuilt 397&nbsp;KB binary — nothing to compile. Installs to
             <code>%LOCALAPPDATA%\Programs\polinrider-hunter</code> and adds it to your
             user <code>PATH</code>. No administrator rights needed.
           </p>
@@ -461,6 +461,41 @@ polinrider-hunter status</code></pre>
             <td><span class="tag tag--kill">stopped</span></td>
           </tr>
           <tr>
+            <td><code>temp_auto_push.bat</code> — rewrites git history with a back-dated <code>--no-verify</code> force-push</td>
+            <td>filename (found in 101 victim repos, no false positives)</td>
+            <td><span class="tag tag--auto">deleted</span></td>
+          </tr>
+          <tr>
+            <td>Second obfuscator variant: <code>Cot%3t=shtP</code>, seeds <code>1111436</code>/<code>3896884</code>, <code>global['_V']</code></td>
+            <td>signatures</td>
+            <td><span class="tag tag--auto">removed</span></td>
+          </tr>
+          <tr>
+            <td>TRON and Aptos dead drops, BNB Smart Chain RPC</td>
+            <td>hardcoded accounts and transaction hashes</td>
+            <td><span class="tag tag--auto">removed</span></td>
+          </tr>
+          <tr>
+            <td>Trojanized npm packages (<code>tailwindcss-style-animate</code> and five siblings)</td>
+            <td>package name in a manifest or lockfile</td>
+            <td><span class="tag tag--manual">reported</span></td>
+          </tr>
+          <tr>
+            <td>HTTP C2 for the tasks.json vector (<code>default-configuration.vercel.app</code> and family)</td>
+            <td>signatures</td>
+            <td><span class="tag tag--auto">removed</span></td>
+          </tr>
+          <tr>
+            <td>Payload in any data file — <code>spellright.dict</code>, <code>.dat</code>, <code>.bin</code></td>
+            <td>content is JavaScript, extension says otherwise</td>
+            <td><span class="tag tag--auto">deleted</span></td>
+          </tr>
+          <tr>
+            <td>Persistence in shell profiles, cron, launch agents, PowerShell profile</td>
+            <td>fetch-and-execute on one line, or an indicator</td>
+            <td><span class="tag tag--manual">reported</span></td>
+          </tr>
+          <tr>
             <td>Ethereum dead-drop C2 and RPC hosts</td>
             <td>signatures; RPC hosts corroborating only</td>
             <td><span class="tag tag--manual">evidence</span></td>
@@ -482,6 +517,20 @@ polinrider-hunter status</code></pre>
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <div class="note">
+      <p>
+        <strong>Where this list comes from.</strong> Partly from samples pulled off an
+        infected machine, and partly from the public dossier on the campaign — it is
+        attributed to a DPRK-linked actor and has put
+        <a href="https://socket.dev/blog/polinrider-north-korea-linked-supply-chain-campaign-expands" rel="noopener">108 malicious packages</a>
+        across npm, Packagist, Go and the Chrome Web Store, with
+        <a href="https://github.com/OpenSourceMalware/PolinRider" rel="noopener">two obfuscator variants</a>
+        live at once. Local samples caught the newer Ethereum dead drop; the published
+        research supplied the TRON and Aptos ones, the propagation script and the
+        trojanized package names.
+      </p>
     </div>
 
     <div class="note">
@@ -703,7 +752,8 @@ python tools/monitor.py --web</code></pre>
         </div>
         <p class="small muted" style="margin-top:12px">
           Standard library only — no <code>pip install</code>. <code>--json</code> gives
-          the same snapshot for scripting.
+          the same snapshot for scripting. If you would rather not use Python at all,
+          <code>polinrider-hunter log --follow</code> is built in.
         </p>
       </div>
       <div>
@@ -741,7 +791,9 @@ polinrider-hunter uninstall --purge</code></pre>
           <tr><td><code>scan [paths…]</code></td><td>Report only; change nothing. Exit 1 if anything critical.</td></tr>
           <tr><td><code>clean [paths…]</code></td><td>Scan, then remove payloads. <code>--dry-run</code> to preview.</td></tr>
           <tr><td><code>repos [paths…]</code></td><td>Fetch and audit every branch, local and remote-tracking, without pulling or checking out.</td></tr>
+          <tr><td><code>log</code></td><td>What the guard has been doing. <code>--follow</code> watches live, <code>--all</code> shows everything.</td></tr>
           <tr><td><code>procs</code></td><td>List hidden stage-2 processes. <code>--kill</code> stops them.</td></tr>
+          <tr><td><code>persistence</code></td><td>Check shell profiles, cron and login agents for a way back in. Reports only.</td></tr>
           <tr><td><code>protect</code> / <code>unprotect</code></td><td>Install or remove just the pre-commit hook.</td></tr>
           <tr><td><code>quarantine</code></td><td>List the originals kept aside during healing.</td></tr>
           <tr><td><code>test-notify</code></td><td>Send a notification, to check they reach you on this machine.</td></tr>

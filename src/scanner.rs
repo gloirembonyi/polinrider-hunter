@@ -115,6 +115,19 @@ pub fn skip_dir(name: &str) -> bool {
     SKIP_DIRS.contains(&name) || SKIP_SYSTEM_DIRS.contains(&name)
 }
 
+/// Files whose presence is itself the finding.
+///
+/// `temp_auto_push.bat` is the propagation script: it reads the last commit's
+/// metadata, moves the system clock back to match it, amends the commit with
+/// `--no-verify` and force-pushes, so the poisoned tree keeps its original
+/// author and timestamp. It was found in 101 victim repositories with no false
+/// positives, which makes the filename alone a better signal than anything in
+/// its contents. `spellright.dict` is another binary-looking payload carrier.
+const ARTIFACT_NAMES: &[&str] = &["temp_auto_push.bat", "config.bat", "spellright.dict"];
+
+/// Data files that should never contain executable code.
+const DISGUISE_EXTS: &[&str] = &["woff2", "woff", "ttf", "otf", "eot", "dict", "dat", "bin"];
+
 /// Known third-party malware gates. They contain signatures by design.
 const KNOWN_DETECTORS: &[&str] = &[
     "check-malware.ps1",
@@ -148,6 +161,29 @@ pub const CONFIG_TARGETS: &[&str] = &[
     "next.config.ts",
     "metro.config.js",
     "babel.config.js",
+    // Every build config the campaign has been seen appending to.
+    "webpack.config.js",
+    "webpack.config.mjs",
+    "webpack.config.cjs",
+    "webpack.config.ts",
+    "rollup.config.js",
+    "rollup.config.mjs",
+    "svelte.config.js",
+    "astro.config.mjs",
+    "astro.config.js",
+    "astro.config.ts",
+    "nuxt.config.js",
+    "nuxt.config.ts",
+    "vue.config.js",
+    "gridsome.config.js",
+    "gatsby-config.js",
+    "remix.config.js",
+    "craco.config.js",
+    "truffle.js",
+    "truffle-config.js",
+    "eslint.config.ts",
+    "App.js",
+    "src/App.js",
     "app.config.js",
     "app.config.ts",
     "nest-cli.json",
@@ -174,7 +210,13 @@ const SCAN_EXTS: &[&str] = &[
 /// Font extensions. PolinRider's autorun variant drops its payload as
 /// `public/fonts/fa-solid-400.woff2` and runs it with `node`, betting that
 /// nobody opens a webfont in a text editor.
-const FONT_EXTS: &[&str] = &["woff2", "woff", "ttf", "otf", "eot"];
+/// Is this a file whose very name means compromise?
+pub fn is_artifact(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(|n| ARTIFACT_NAMES.iter().any(|a| a.eq_ignore_ascii_case(n)))
+        .unwrap_or(false)
+}
 
 /// Magic bytes a genuine font begins with.
 const FONT_MAGIC: &[&[u8]] = &[
@@ -197,7 +239,7 @@ fn disguised_font(path: &Path, data: &[u8]) -> bool {
         .and_then(|s| s.to_str())
         .map(|e| e.to_ascii_lowercase())
         .unwrap_or_default();
-    if !FONT_EXTS.contains(&ext.as_str()) || data.len() < 8 {
+    if !DISGUISE_EXTS.contains(&ext.as_str()) || data.len() < 8 {
         return false;
     }
     if FONT_MAGIC.iter().any(|m| data.starts_with(m)) {
@@ -300,17 +342,21 @@ fn is_known_detector(path: &Path) -> bool {
 }
 
 fn has_scannable_ext(path: &Path) -> bool {
-    // Extensionless names we still care about (Dockerfile, .env variants).
+    // Extensionless names we still care about (Dockerfile, .env variants), and
+    // the artefacts whose filename alone is the finding.
     if let Some(n) = path.file_name().and_then(|s| s.to_str()) {
         if n == "Dockerfile" || n.starts_with(".env") {
             return true;
         }
     }
+    if is_artifact(path) {
+        return true;
+    }
     path.extension()
         .and_then(|s| s.to_str())
         .map(|e| {
             let e = e.to_ascii_lowercase();
-            SCAN_EXTS.contains(&e.as_str()) || FONT_EXTS.contains(&e.as_str())
+            SCAN_EXTS.contains(&e.as_str()) || DISGUISE_EXTS.contains(&e.as_str())
         })
         .unwrap_or(false)
 }
@@ -445,6 +491,23 @@ fn refine(path: &Path, mut hits: Vec<Hit>) -> Vec<Hit> {
 pub fn scan_file(path: &Path) -> Option<Finding> {
     if is_known_detector(path) || is_own_state(path) {
         return None;
+    }
+    // Some files need no reading: the name is the whole finding.
+    if is_artifact(path) {
+        return Some(Finding {
+            path: path.to_path_buf(),
+            hits: vec![Hit {
+                ioc: "propagation-artifact",
+                sev: Severity::Critical,
+                why: "a PolinRider propagation/carrier file - its presence is the finding",
+                start: 0,
+                end: 0,
+                line: 0,
+            }],
+            note: Some(
+                "rewrites commit history with a back-dated --no-verify force-push".into(),
+            ),
+        });
     }
     let meta = std::fs::symlink_metadata(path).ok()?;
     if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
@@ -743,6 +806,20 @@ mod tests {
     fn size_caps_are_ordered_sensibly() {
         // A target filename may be read well past the incidental cap.
         assert!(MAX_INCIDENTAL_BYTES < MAX_FILE_BYTES);
+    }
+
+    #[test]
+    fn propagation_artifacts_are_flagged_by_name() {
+        assert!(is_artifact(Path::new("/repo/temp_auto_push.bat")));
+        assert!(is_artifact(Path::new(r"C:\repo\TEMP_AUTO_PUSH.BAT")));
+        assert!(is_artifact(Path::new("/repo/config.bat")));
+        assert!(!is_artifact(Path::new("/repo/build.bat")));
+    }
+
+    #[test]
+    fn a_dictionary_carrying_javascript_is_a_disguise() {
+        let js = b"const m = require('http'); module.exports = function(){};";
+        assert!(disguised_font(Path::new("/x/spellright.dict"), js));
     }
 
     #[test]

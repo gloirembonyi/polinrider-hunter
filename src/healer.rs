@@ -143,9 +143,14 @@ pub fn heal(finding: &Finding, dry_run: bool) -> Outcome {
         Err(e) => return Outcome::Failed(format!("read: {e}")),
     };
 
-    // A "font" that is really JavaScript is entirely payload - there is nothing
-    // in it to preserve, so the file goes rather than being edited.
-    if finding.hits.iter().any(|h| h.ioc == "font-disguise") {
+    // A "font" that is really JavaScript, or a propagation script, is entirely
+    // payload - there is nothing in it to preserve, so the file goes rather
+    // than being edited.
+    if finding
+        .hits
+        .iter()
+        .any(|h| h.ioc == "font-disguise" || h.ioc == "propagation-artifact")
+    {
         if dry_run {
             return Outcome::Skipped("would delete disguised payload file (dry run)".into());
         }
