@@ -64,7 +64,13 @@ if ((Test-Path $Exe) -and (Get-Process -Name 'polinrider-hunter' -ErrorAction Si
         catch { Start-Sleep -Milliseconds 250 }
     }
     if ($free) { Ok 'stopped' }
-    else { Warn 'it is still holding the program file; the upgrade may fail' }
+    else {
+        # Windows can hold the image open for a moment after the process is
+        # gone. The download step renames the old file aside rather than
+        # overwriting it, which works regardless - so this is a note, not a
+        # warning about something that is going to fail.
+        Info 'stopped; the program file is briefly still locked, which is handled below'
+    }
 }
 
 # ---------------------------------------------------------------------------
