@@ -117,9 +117,18 @@ pub fn run(cfg: &Config, once: bool) -> i32 {
         // "a guard is already running" and named its own pid. Worse, the guard
         // it had just spawned could see that fresh heartbeat, conclude another
         // instance owned the lock, and quietly exit.
-        if !once {
-            service::write_heartbeat();
-        }
+        // A pass is not instantaneous, and the heartbeat is what everything
+        // else uses to decide the guard is alive. The first pass in particular
+        // audits every branch of every repository, which takes longer than the
+        // staleness window - so a guard doing exactly what it should looked
+        // dead to `status`, to `monitor`, and to the next `install`. Beat at
+        // the start of each pass and again after each slow stage.
+        let beat = || {
+            if !once {
+                service::write_heartbeat();
+            }
+        };
+        beat();
         let now = util::now_secs();
 
         // ---- quick pass over known targets -----------------------------------
@@ -237,6 +246,7 @@ pub fn run(cfg: &Config, once: bool) -> i32 {
         // lines means spawning a shell, and doing that every 30 seconds is a
         // lot of work for something that changes rarely - the payload has to
         // survive a build to exist at all.
+        beat();
         for s in if due_full { procscan::find() } else { Vec::new() } {
             if cfg.kill_procs {
                 let killed = procscan::kill(s.pid);
@@ -274,10 +284,14 @@ pub fn run(cfg: &Config, once: bool) -> i32 {
             cfg.git_interval > 0 && (once || now.saturating_sub(last_git) >= cfg.git_interval);
         if due_git {
             last_git = now;
+            beat();
             for p in &cfg.paths {
                 if !gitscan::is_repo(p) {
                     continue;
                 }
+                // One repository can take a while on its own: it fetches every
+                // remote before reading the refs.
+                beat();
                 for hit in gitscan::scan_repo(p, true) {
                     util::log_line(
                         &log,

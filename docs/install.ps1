@@ -50,16 +50,21 @@ New-Item -ItemType Directory -Force $InstallDir | Out-Null
 # exists" and leaves the old build in charge while the installer claims success.
 # Ask it to stop, then verify nothing is still holding the file.
 # ---------------------------------------------------------------------------
-if (Test-Path $Exe) {
+if ((Test-Path $Exe) -and (Get-Process -Name 'polinrider-hunter' -ErrorAction SilentlyContinue)) {
     Step 'Stopping the running guard'
-    try { & $Exe stop 2>&1 | ForEach-Object { Info $_ } } catch { }
+    # Ask politely first. Output is discarded on purpose: a version old enough
+    # not to have `stop` answers with its entire help text, which is noise here.
+    try { & $Exe stop *>$null } catch { }
     Get-Process -Name 'polinrider-hunter' -ErrorAction SilentlyContinue |
         Stop-Process -Force -ErrorAction SilentlyContinue
     # Handles close a moment after the process exits.
+    $free = $false
     for ($i = 0; $i -lt 20; $i++) {
-        try { [IO.File]::Open($Exe, 'Open', 'Write').Dispose(); break }
+        try { [IO.File]::Open($Exe, 'Open', 'Write').Dispose(); $free = $true; break }
         catch { Start-Sleep -Milliseconds 250 }
     }
+    if ($free) { Ok 'stopped' }
+    else { Warn 'it is still holding the program file; the upgrade may fail' }
 }
 
 # ---------------------------------------------------------------------------

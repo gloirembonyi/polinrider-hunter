@@ -198,7 +198,38 @@ pub fn git(repo: &std::path::Path, args: &[&str]) -> Output {
     let repo_s = repo.to_str().unwrap_or(".");
     full.push(repo_s);
     full.extend_from_slice(args);
-    run("git", &full)
+    run_git(&full)
+}
+
+/// Run git with every interactive prompt disabled.
+///
+/// The branch audit fetches remotes, and a background guard has no console. If
+/// a stored credential has expired, git would sit waiting for a username that
+/// nobody can type - the process stays alive, stops doing anything, and the
+/// only symptom is a guard that never reports again. Refusing to prompt turns
+/// that into a failed fetch, which is a thing we can report and carry on from.
+fn run_git(args: &[&str]) -> Output {
+    let mut cmd = Command::new("git");
+    cmd.args(args);
+    // No terminal prompt, no GUI credential helper, no ssh passphrase prompt.
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GCM_INTERACTIVE", "never");
+    cmd.env("GIT_ASKPASS", "");
+    cmd.env("SSH_ASKPASS", "");
+    cmd.env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new");
+    hide_window(&mut cmd);
+    match cmd.output() {
+        Ok(o) => Output {
+            ok: o.status.success(),
+            stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+        },
+        Err(e) => Output {
+            ok: false,
+            stdout: String::new(),
+            stderr: e.to_string(),
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------

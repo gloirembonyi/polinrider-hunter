@@ -54,7 +54,10 @@ mkdir -p "$INSTALL_DIR"
 # ---------------------------------------------------------------------------
 if [ -x "$EXE" ]; then
     step 'Stopping the running guard'
-    "$EXE" stop 2>/dev/null || true
+    # Output discarded on purpose: a version old enough not to have `stop`
+    # answers with its entire help text, which is noise here.
+    "$EXE" stop >/dev/null 2>&1 || true
+    ok 'stopped'
 fi
 
 # ---------------------------------------------------------------------------
