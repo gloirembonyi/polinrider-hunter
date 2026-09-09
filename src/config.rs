@@ -165,45 +165,90 @@ fn parse_bool(v: &str, default: bool) -> bool {
     }
 }
 
-/// Best-effort guess at directories worth watching, used by `install` when the
-/// user does not name any: every git repository directly under the usual
-/// developer folders.
-pub fn discover_repos() -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
+/// The user's home directory.
+pub fn user_home() -> PathBuf {
     let base = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-    if base.is_empty() {
+        .unwrap_or_else(|_| ".".into());
+    PathBuf::from(base)
+}
+
+/// Everywhere worth hunting on this machine.
+///
+/// The home directory always, plus every fixed drive when `all_drives` is set.
+/// A developer's projects are almost always under home, so the default keeps a
+/// full hunt to minutes rather than hours; `--drives` is there for the machine
+/// with a D:\work partition.
+pub fn machine_roots(all_drives: bool) -> Vec<PathBuf> {
+    let mut out = vec![user_home()];
+    if !all_drives {
         return out;
     }
-    let roots = [
-        "Desktop",
-        "Documents",
-        "Downloads",
-        "source",
-        "source/repos",
-        "Projects",
-        "projects",
-        "repos",
-        "dev",
-        "code",
-        "git",
-        "work",
-    ];
-    for r in roots {
-        let dir = Path::new(&base).join(r);
+    #[cfg(windows)]
+    {
+        // Probe drive letters directly: enumerating volumes properly needs the
+        // Windows API, and a bare existence check costs nothing.
+        for letter in b'A'..=b'Z' {
+            let root = format!("{}:\\", letter as char);
+            let p = PathBuf::from(&root);
+            if p.exists() && !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        for extra in ["/home", "/Users", "/opt", "/srv", "/var/www"] {
+            let p = PathBuf::from(extra);
+            if p.exists() && !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// Find git repositories under `roots`, recursively.
+///
+/// Stops descending once a `.git` is found - nested repos inside a repo are
+/// covered by scanning the parent, and not recursing saves a lot of walking.
+pub fn discover_repos_under(roots: &[PathBuf], max_depth: usize) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut stack: Vec<(PathBuf, usize)> = roots.iter().map(|r| (r.clone(), 0usize)).collect();
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > max_depth {
+            continue;
+        }
+        if dir.join(".git").exists() {
+            if !out.contains(&dir) {
+                out.push(dir);
+            }
+            continue; // do not descend into a repo
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
         for e in entries.flatten() {
             let p = e.path();
-            if p.join(".git").exists() && !out.contains(&p) {
-                out.push(p);
+            let Ok(meta) = e.metadata() else { continue };
+            if !meta.is_dir() {
+                continue;
             }
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if crate::scanner::skip_dir(&name) {
+                continue;
+            }
+            stack.push((p, depth + 1));
         }
     }
     out.sort();
     out
+}
+
+/// Repos under the home directory - what `install` uses when given no paths.
+pub fn discover_repos() -> Vec<PathBuf> {
+    discover_repos_under(&[user_home()], 6)
 }
 
 #[cfg(test)]

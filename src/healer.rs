@@ -105,6 +105,23 @@ pub fn heal(finding: &Finding, dry_run: bool) -> Outcome {
         Err(e) => return Outcome::Failed(format!("read: {e}")),
     };
 
+    // A "font" that is really JavaScript is entirely payload - there is nothing
+    // in it to preserve, so the file goes rather than being edited.
+    if finding.hits.iter().any(|h| h.ioc == "font-disguise") {
+        if dry_run {
+            return Outcome::Skipped("would delete disguised payload file (dry run)".into());
+        }
+        let iocs: Vec<&str> = finding.hits.iter().map(|h| h.ioc).collect();
+        if let Err(e) = quarantine(path, &iocs) {
+            return Outcome::Failed(format!("quarantine: {e}"));
+        }
+        if let Err(e) = std::fs::remove_file(path) {
+            return Outcome::Failed(format!("delete: {e}"));
+        }
+        untrack_from_git(path);
+        return Outcome::Deleted;
+    }
+
     // A dropped .env exists only to carry the C2 key: remove the whole file.
     if is_malicious_env(path, &data) {
         if dry_run {

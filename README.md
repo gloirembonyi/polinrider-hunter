@@ -8,9 +8,35 @@ and git repositories, then keeps watching so it cannot come back quietly.
 One binary. No runtime to install, no dependencies to audit — the whole thing is
 Rust standard library, on purpose.
 
+## Install
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/OWNER/polinrider-hunter/main/install.ps1 | iex
 ```
-polinrider-hunter install          # run once; cleans now, guards from then on
-polinrider-hunter status           # what it is doing
+
+**Linux / macOS**:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/OWNER/polinrider-hunter/main/install.sh | sh
+```
+
+Either installs the binary to a user directory (no administrator or root),
+sweeps the whole machine and cleans what it finds, then registers the background
+guard. Run it once. Replace `OWNER` with wherever the repository lives, or set
+`POLINRIDER_REPO`.
+
+Both prefer a published release binary and fall back to building from source
+with `cargo`; if neither is possible they say exactly what is missing rather
+than failing quietly.
+
+Already have the binary?
+
+```
+polinrider-hunter hunt             # clean this machine now, no setup needed
+polinrider-hunter install          # then keep it clean
+polinrider-hunter status           # what the guard is doing
 ```
 
 ---
@@ -133,6 +159,9 @@ contains; a real `.env` that merely picked up the key is never destroyed.
 ## Commands
 
 ```
+hunt                   Sweep this whole machine: stop any running loader, find
+                       every infected file under your home directory, clean it.
+                       No setup required. --drives covers every drive.
 install [paths...]     Watch these directories, install a pre-commit hook in each
                        repo, sweep them now, and start a guard at every login.
 status                 Where everything lives; whether the guard is alive.
@@ -146,8 +175,30 @@ protect / unprotect    Just the pre-commit hook.
 quarantine             List the originals kept aside.
 ```
 
-Flags: `--json`, `--dry-run`, `--quick`, `--no-fetch`, `--kill`,
+Flags: `--json`, `--dry-run`, `--quick`, `--no-fetch`, `--kill`, `--drives`,
 `--interval <secs>`, `--no-autostart`, `--no-color`.
+
+### Getting it off the machine entirely
+
+```
+polinrider-hunter hunt --drives
+```
+
+`hunt` is the command for "remove this from my computer". It does three things,
+in an order that matters:
+
+1. **Stops any running loader first.** A live stage 2 can drop a fresh payload
+   into a directory the scan has already walked past, so stopping it before
+   scanning is what makes the sweep hold.
+2. **Finds every project on the machine**, not just configured ones - the whole
+   home directory by default, every drive with `--drives`. Operating-system,
+   vendor and package-cache directories are skipped, because PolinRider lives in
+   project trees and walking a Rust registry or the Windows directory would take
+   hours for nothing.
+3. **Cleans each hit**, quarantining the original first, and reports anything it
+   will not touch automatically instead of guessing.
+
+`--dry-run` shows what it would do and writes nothing.
 
 Exit codes: `0` clean, `1` something found, `2` bad usage.
 
@@ -217,8 +268,20 @@ with `path` repeating once per directory.
 
 ```
 cargo build --release      # target/release/polinrider-hunter
-cargo test                 # 31 unit tests
+cargo test                 # 44 unit + 14 end-to-end tests
 ```
+
+The end-to-end suite in `tests/` is the one worth reading. It plants each real
+attack shape on disk - spaced and tab-padded config payloads in both CRLF and
+LF, the NestJS `eval` dropper, the dropped `.env`, JavaScript wearing a `.woff2`
+extension - then asserts the payload is gone, the legitimate code around it is
+byte-for-byte unchanged, a second pass finds nothing (removal is complete, not
+partial), and the quarantined original still matches what was on disk. It also
+covers the cases where the tool must *not* act: a real `.env` holding genuine
+secrets, a genuine webfont, a markdown table, a CI gate.
+
+Payloads in the suite are inert - the recognisable shape of PolinRider with a
+harmless body - so running the tests never puts working malware on disk.
 
 Requires only a Rust toolchain. No network access needed at build time — there is
 nothing to download, which is a deliberate property for a tool whose entire

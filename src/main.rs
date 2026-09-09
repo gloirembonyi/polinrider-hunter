@@ -4,18 +4,11 @@
 //! people need; everything else exists so you can see what it is doing and
 //! check its work by hand.
 
-mod config;
-mod daemon;
-mod gitscan;
-mod healer;
-mod procscan;
-mod report;
-mod scanner;
-mod service;
-mod signatures;
-mod util;
-
 use std::path::PathBuf;
+
+use polinrider_hunter::{
+    config, daemon, gitscan, healer, procscan, report, scanner, service, util,
+};
 
 use config::Config;
 use util::{BOLD, DIM, GREEN, RED, RESET, YELLOW};
@@ -80,6 +73,7 @@ fn main() {
     let cfg = Config::load();
 
     let code = match args.cmd.as_str() {
+        "hunt" => cmd_hunt(&args, json),
         "scan" => cmd_scan(&args, &cfg, json),
         "clean" => cmd_clean(&args, &cfg, json),
         "repos" => cmd_repos(&args, &cfg, json),
@@ -120,6 +114,169 @@ fn require_paths(paths: &[PathBuf]) -> bool {
         false
     } else {
         true
+    }
+}
+
+/// Sweep the whole machine, not just the configured repos.
+///
+/// This is the "get it off my computer" command: find every project on the
+/// machine, clean each one, and stop any loader that is already running. It
+/// needs no configuration and no prior install.
+fn cmd_hunt(args: &Args, json: bool) -> i32 {
+    let all_drives = args.has("--drives");
+    let dry = args.has("--dry-run");
+    let roots = config::machine_roots(all_drives);
+
+    if !json {
+        println!("{}", util::c(BOLD, "PolinRider hunt"));
+        for r in &roots {
+            println!("  searching {}", r.display());
+        }
+        if !all_drives {
+            println!(
+                "{}",
+                util::c(DIM, "  (add --drives to include every drive on the machine)")
+            );
+        }
+        println!();
+    }
+
+    // 1. Anything running right now. Do this first: a live loader can re-drop a
+    //    payload into a directory we have already passed.
+    let mut killed = 0usize;
+    for s in procscan::find() {
+        if dry {
+            println!("  {} pid {} ({})", util::c(YELLOW, "would stop"), s.pid, s.marker);
+            continue;
+        }
+        if procscan::kill(s.pid) {
+            killed += 1;
+            println!(
+                "  {} pid {} ({})",
+                util::c(GREEN, "stopped loader"),
+                s.pid,
+                s.marker
+            );
+        } else {
+            println!("  {} pid {}", util::c(RED, "could not stop"), s.pid);
+        }
+    }
+
+    // 2. Every file under every root, healing each hit as it turns up rather
+    //    than at the end: a machine-wide walk takes minutes, and an interrupted
+    //    run should still have cleaned whatever it already reached.
+    let mut healed = 0usize;
+    let mut found = 0usize;
+    let mut noted = 0usize;
+    let mut manual: Vec<String> = Vec::new();
+
+    let mut handle = |f: scanner::Finding| {
+        found += 1;
+        if !f.is_critical() {
+            noted += 1;
+            if !json {
+                println!(
+                    "  {} {}",
+                    util::c(YELLOW, "review  "),
+                    f.path.display()
+                );
+            }
+            return;
+        }
+        let outcome = healer::heal(&f, dry);
+        match &outcome {
+            healer::Outcome::Healed { .. } | healer::Outcome::Deleted => {
+                healed += 1;
+                if let Some(root) = gitscan::repo_root(f.path.parent().unwrap_or(&f.path)) {
+                    gitscan::stage(&root, &f.path);
+                }
+            }
+            healer::Outcome::Failed(r) => manual.push(format!("{} - {r}", f.path.display())),
+            healer::Outcome::Skipped(_) => {}
+        }
+        if !json {
+            let iocs: Vec<&str> = f.hits.iter().map(|h| h.ioc).collect();
+            println!(
+                "  {} {}",
+                util::c(GREEN, &outcome.label()),
+                f.path.display()
+            );
+            println!("      {}", util::c(DIM, &iocs.join(", ")));
+        }
+    };
+
+    // Walk each root one immediate subdirectory at a time, so the output shows
+    // where it has got to instead of sitting silent for minutes.
+    for root in &roots {
+        let mut subdirs: Vec<PathBuf> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(root) {
+            for e in entries.flatten() {
+                if e.metadata().map(|m| m.is_dir()).unwrap_or(false) {
+                    let name = e.file_name();
+                    if !scanner::skip_dir(&name.to_string_lossy()) {
+                        subdirs.push(e.path());
+                    }
+                }
+            }
+        }
+        subdirs.sort();
+        // Files sitting directly in the root, plus each subtree in turn.
+        if !json {
+            println!("{}", util::c(DIM, &format!("  [{}]", root.display())));
+        }
+        for d in subdirs {
+            if !json {
+                println!("{}", util::c(DIM, &format!("    scanning {}", d.display())));
+            }
+            scanner::scan_tree_cb(&d, false, &mut handle);
+        }
+        scanner::scan_tree_cb(root, true, &mut handle);
+    }
+    drop(handle);
+
+    if json {
+        println!(
+            "{{\"healed\":{healed},\"found\":{found},\"needs_review\":{noted},\"manual\":{}}}",
+            manual.len()
+        );
+        return if manual.is_empty() { 0 } else { 1 };
+    }
+
+    println!();
+    println!(
+        "{} {} loader process(es) stopped, {} of {} finding(s) cleaned, {} need a look",
+        util::c(BOLD, "hunt complete:"),
+        killed,
+        healed,
+        found,
+        manual.len() + noted
+    );
+    if !manual.is_empty() {
+        println!("\n{}", util::c(YELLOW, "clean these by hand:"));
+        for m in &manual {
+            println!("  {m}");
+        }
+    }
+    if healed > 0 && !dry {
+        println!(
+            "{}",
+            util::c(
+                DIM,
+                &format!("originals kept in {}", config::quarantine_dir().display())
+            )
+        );
+        println!(
+            "{}",
+            util::c(
+                DIM,
+                "run `polinrider-hunter install` to keep it from coming back"
+            )
+        );
+    }
+    if manual.is_empty() {
+        0
+    } else {
+        1
     }
 }
 
@@ -551,21 +708,31 @@ fn cmd_hook() -> i32 {
 }
 
 fn usage() {
+    // The help screen is one pre-formatted block, so it needs the codes as
+    // values rather than wrapping each span; blank them out when colour is off.
+    let (b, r) = if util::colour_enabled() {
+        (BOLD, RESET)
+    } else {
+        ("", "")
+    };
     println!(
-        r#"{BOLD}polinrider-hunter {VERSION}{RESET}
+        r#"{b}polinrider-hunter {VERSION}{r}
 Detects and removes the PolinRider supply-chain malware.
 
-{BOLD}USAGE{RESET}
+{b}USAGE{r}
   polinrider-hunter <command> [paths...] [flags]
 
-{BOLD}GETTING STARTED{RESET}
+{b}GETTING STARTED{r}
+  hunt                   Sweep this whole machine: stop any running loader, find
+                         every infected file under your home directory and clean
+                         it. Needs no setup. --drives covers every drive.
   install [paths...]     Watch these directories, protect their repos with a
                          pre-commit hook, sweep them now, and start a background
                          guard that keeps doing it at every login. Run once.
   status                 Where everything lives and whether the guard is alive.
   uninstall              Stop the guard and remove the hooks.
 
-{BOLD}ON DEMAND{RESET}
+{b}ON DEMAND{r}
   scan [paths...]        Report indicators; change nothing. Exit 1 if infected.
   clean [paths...]       Scan, then remove payloads. Originals are quarantined.
   repos [paths...]       Fetch and audit every branch of each repo, local and
@@ -575,17 +742,18 @@ Detects and removes the PolinRider supply-chain malware.
   unprotect [repos...]   Remove it.
   quarantine             List originals kept aside during healing.
 
-{BOLD}FLAGS{RESET}
+{b}FLAGS{r}
   --json                 Machine-readable output (scan, clean, repos).
   --dry-run              clean: report what would change, write nothing.
   --quick                scan: only the filenames PolinRider targets.
   --no-fetch             repos: audit refs as they are, do not contact remotes.
   --kill                 procs: stop what is found.
+  --drives               hunt: search every drive, not just your home directory.
   --interval <secs>      install: seconds between quick passes (default 30).
   --no-autostart         install: set up, but do not start at login.
   --no-color             Plain output.
 
-{BOLD}NOTES{RESET}
+{b}NOTES{r}
   Healing never rewrites line endings, so a fix stays a one-line diff.
   The guard heals working trees only. It never rewrites git history and never
   pushes; `repos` reports what is on a branch and leaves the decision to you.

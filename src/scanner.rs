@@ -40,6 +40,67 @@ const SKIP_DIRS: &[&str] = &[
     ".svelte-kit",
 ];
 
+/// Directories that belong to the operating system or another vendor, which a
+/// machine-wide hunt must not spend hours walking. PolinRider lives in project
+/// trees; none of these are project trees.
+const SKIP_SYSTEM_DIRS: &[&str] = &[
+    "Windows",
+    "Program Files",
+    "Program Files (x86)",
+    "ProgramData",
+    "$Recycle.Bin",
+    "System Volume Information",
+    "WindowsApps",
+    "Microsoft",
+    "MicrosoftEdge",
+    "OneDrive",
+    "Packages",
+    "CrashDumps",
+    "WebCache",
+    "INetCache",
+    "GPUCache",
+    "Code Cache",
+    "ShaderCache",
+    "Service Worker",
+    "IndexedDB",
+    "Local Storage",
+    "workspaceStorage",
+    "globalStorage",
+    "CachedExtensionVSIXs",
+    "logs",
+    "Crashpad",
+    "proc",
+    "sys",
+    "dev",
+    "snap",
+    "Library",
+    // Package and toolchain caches. Enormous, not project code, and a hunt that
+    // walks a Rust registry or an npm cache takes hours instead of minutes.
+    ".cargo",
+    ".rustup",
+    ".npm",
+    ".nuget",
+    ".m2",
+    ".gem",
+    ".pub-cache",
+    ".deno",
+    ".bun",
+    ".android",
+    ".docker",
+    ".conda",
+    ".pyenv",
+    ".nvm",
+    ".rbenv",
+    ".stack",
+    ".ivy2",
+    ".sbt",
+];
+
+/// Should the walker skip a directory with this name?
+pub fn skip_dir(name: &str) -> bool {
+    SKIP_DIRS.contains(&name) || SKIP_SYSTEM_DIRS.contains(&name)
+}
+
 /// Known third-party malware gates. They contain signatures by design.
 const KNOWN_DETECTORS: &[&str] = &[
     "check-malware.ps1",
@@ -95,6 +156,51 @@ const SCAN_EXTS: &[&str] = &[
     "sh", "bash", "ps1", "psm1", "bat", "cmd", "vbs", "py", "rb", "php", "vue", "svelte", "env",
     "config", "lock", "md",
 ];
+
+/// Font extensions. PolinRider's autorun variant drops its payload as
+/// `public/fonts/fa-solid-400.woff2` and runs it with `node`, betting that
+/// nobody opens a webfont in a text editor.
+const FONT_EXTS: &[&str] = &["woff2", "woff", "ttf", "otf", "eot"];
+
+/// Magic bytes a genuine font begins with.
+const FONT_MAGIC: &[&[u8]] = &[
+    b"wOF2",           // woff2
+    b"wOFF",           // woff
+    b"\x00\x01\x00\x00", // truetype
+    b"true",
+    b"ttcf",
+    b"OTTO",           // opentype
+];
+
+/// A font that is not a font.
+///
+/// Cheap and very hard to evade: the payload has to be valid JavaScript for
+/// `node` to run it, and valid JavaScript cannot also start with a font's magic
+/// bytes. Checking the signature rather than the extension is the whole point.
+fn disguised_font(path: &Path, data: &[u8]) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !FONT_EXTS.contains(&ext.as_str()) || data.len() < 8 {
+        return false;
+    }
+    if FONT_MAGIC.iter().any(|m| data.starts_with(m)) {
+        return false;
+    }
+    // Not a font. Is it code?
+    let js = [
+        &b"require("[..],
+        &b"function"[..],
+        &b"=>"[..],
+        &b"global"[..],
+        &b"eval("[..],
+        &b"process."[..],
+        &b"module"[..],
+    ];
+    js.iter().filter(|m| find_lit_ci(data, m).is_some()).count() >= 2
+}
 
 /// Files this big are not hand-written config; skip them.
 const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
@@ -154,7 +260,10 @@ fn has_scannable_ext(path: &Path) -> bool {
     }
     path.extension()
         .and_then(|s| s.to_str())
-        .map(|e| SCAN_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+        .map(|e| {
+            let e = e.to_ascii_lowercase();
+            SCAN_EXTS.contains(&e.as_str()) || FONT_EXTS.contains(&e.as_str())
+        })
         .unwrap_or(false)
 }
 
@@ -289,7 +398,20 @@ pub fn scan_file(path: &Path) -> Option<Finding> {
     {
         return None;
     }
-    let hits = refine(path, signatures::scan(&data));
+    let mut hits = refine(path, signatures::scan(&data));
+    if disguised_font(path, &data) {
+        hits.insert(
+            0,
+            Hit {
+                ioc: "font-disguise",
+                sev: Severity::Critical,
+                why: "a .woff2/.ttf whose contents are JavaScript, not a font - the dropped payload",
+                start: 0,
+                end: 0,
+                line: 1,
+            },
+        );
+    }
     if hits.is_empty() {
         None
     } else {
@@ -323,9 +445,21 @@ pub fn scan_blob(name: &Path, data: &[u8]) -> Option<Finding> {
     }
 }
 
-/// Recursively scan `root`. `quick` restricts reads to `CONFIG_TARGETS`.
+/// Recursively scan `root`, collecting findings.
 pub fn scan_tree(root: &Path, quick: bool) -> Vec<Finding> {
     let mut out = Vec::new();
+    scan_tree_cb(root, quick, &mut |f| out.push(f));
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
+/// Recursively scan `root`, handing each finding to `on_finding` as it is
+/// discovered.
+///
+/// Streaming matters for a machine-wide sweep. Collecting everything first means
+/// a long walk shows no progress and, worse, an interrupted run cleans nothing
+/// at all - the caller can act on each hit the moment it is found instead.
+pub fn scan_tree_cb(root: &Path, quick: bool, on_finding: &mut dyn FnMut(Finding)) {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -344,7 +478,7 @@ pub fn scan_tree(root: &Path, quick: bool) -> Vec<Finding> {
                 }
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
-                if SKIP_DIRS.contains(&name.as_ref()) {
+                if skip_dir(&name) {
                     continue;
                 }
                 stack.push(path);
@@ -356,14 +490,12 @@ pub fn scan_tree(root: &Path, quick: bool) -> Vec<Finding> {
                 };
                 if interesting {
                     if let Some(f) = scan_file(&path) {
-                        out.push(f);
+                        on_finding(f);
                     }
                 }
             }
         }
     }
-    out.sort_by(|a, b| a.path.cmp(&b.path));
-    out
 }
 
 /// Scan several roots.
@@ -409,6 +541,30 @@ mod tests {
 
     fn hit(ioc: &'static str, sev: Severity) -> Hit {
         Hit { ioc, sev, why: "", start: 0, end: 1, line: 1 }
+    }
+
+    #[test]
+    fn a_real_font_is_left_alone() {
+        let mut woff2 = b"wOF2".to_vec();
+        woff2.extend_from_slice(b"\x00\x01\x02\x03 function require global");
+        assert!(!disguised_font(Path::new("/x/fonts/a.woff2"), &woff2));
+    }
+
+    #[test]
+    fn javascript_wearing_a_font_extension_is_caught() {
+        let js = b"const m = require('http'); module.exports = function(){};";
+        assert!(disguised_font(Path::new("/x/public/fonts/fa-solid-400.woff2"), js));
+    }
+
+    #[test]
+    fn a_non_font_extension_is_not_judged_this_way() {
+        let js = b"const m = require('http'); module.exports = function(){};";
+        assert!(!disguised_font(Path::new("/x/src/index.js"), js));
+    }
+
+    #[test]
+    fn short_files_are_not_guessed_at() {
+        assert!(!disguised_font(Path::new("/x/a.woff2"), b"tiny"));
     }
 
     #[test]

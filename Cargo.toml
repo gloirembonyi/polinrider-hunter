@@ -5,6 +5,10 @@ edition = "2021"
 description = "Detects and removes the PolinRider supply-chain malware from developer machines and git repositories."
 license = "MIT"
 
+[lib]
+name = "polinrider_hunter"
+path = "src/lib.rs"
+
 [[bin]]
 name = "polinrider-hunter"
 path = "src/main.rs"

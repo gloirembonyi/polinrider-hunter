@@ -28,6 +28,12 @@ fn colour_on() -> bool {
     unsafe { COLOUR }
 }
 
+/// Whether colour is enabled. Needed by callers that build a whole block of
+/// pre-formatted text (the help screen) rather than colouring one span.
+pub fn colour_enabled() -> bool {
+    colour_on()
+}
+
 /// Wrap `s` in an ANSI colour, or return it unchanged when colour is off.
 pub fn c(colour: &str, s: &str) -> String {
     if colour_on() {
