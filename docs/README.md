@@ -1,4 +1,4 @@
-# site/ — the polinrider-hunter page
+# docs/ — the polinrider-hunter page
 
 <!-- POLINRIDER-HUNTER-DETECTOR: this file documents malware signatures. Not malware. -->
 
@@ -17,53 +17,44 @@ the two read as siblings.
 
 ---
 
-## Deploying to Vercel
+## Published with GitHub Pages
 
-**Dashboard:** New Project → import the repository → set:
+Live at <https://gloirembonyi.github.io/polinrider-hunter>.
 
-| Setting | Value |
-|---|---|
-| Framework Preset | **Other** |
-| Root Directory | **`site`** |
-| Build Command | *(leave empty)* |
-| Output Directory | *(leave empty)* |
+Settings → Pages → **Source: Deploy from a branch**, branch `main`, folder
+**`/docs`**. Nothing to build; GitHub serves this directory as-is. `.nojekyll`
+is present so Jekyll does not process it.
 
-**CLI:**
+### Two things a project Pages site changes
 
-```sh
-npm i -g vercel
-cd site
-vercel --prod
-```
+A project site is served from `https://user.github.io/repo/`, not from a domain
+root, and both of these caught the first version out:
 
-`vercel.json` sets `cleanUrls`, a few security headers, forces the install
-scripts to `text/plain` so a browser shows them instead of downloading, and
-stops them being served from a stale cache.
+- **Every asset path must be relative.** `href="/styles.css"` resolves to
+  `https://user.github.io/styles.css` and 404s. They are all relative now, which
+  also means the page works from `file://` and from any other host unchanged.
+- **`location.origin` is not the base URL.** It omits the `/repo` segment, so
+  the install command a visitor copied would have pointed at the wrong place.
+  `app.js` derives the base from the page's own directory instead.
 
-### After the first deploy — one line to change
+### Moving it elsewhere
 
-Vercel gives you a domain. Point the installers at it:
-
-- `site/install.ps1` → the `$Site = '…'` line
-- `site/install.sh` → the `SITE="${POLINRIDER_SITE:-…}"` line
-
-The **page** needs no such edit: `app.js` rewrites the displayed command to
-`location.origin`, so whatever domain it is served from, the command a visitor
-copies is correct. Only the scripts hardcode it, because a script piped into a
-shell cannot know the URL it came from.
-
-Both also honour an override, which is handy for testing a preview deployment:
+Nothing is GitHub-specific. Point any static host at `docs/` and the page works;
+the displayed install command follows automatically because it is computed, not
+hardcoded. Only the two scripts carry a default URL — the `$Site` line in
+`install.ps1` and the `SITE=` line in `install.sh` — because a script piped into
+a shell cannot know where it came from. Both honour `POLINRIDER_SITE`:
 
 ```sh
-POLINRIDER_SITE=https://my-preview.vercel.app sh install.sh
+POLINRIDER_SITE=https://example.com/hunter sh install.sh
 ```
 
 Both scripts also take:
 
 | | |
 |---|---|
-| `POLINRIDER_SITE` | where to fetch the binary from — handy for a preview deploy |
-| `POLINRIDER_REPO` | `owner/repo`, to enable the release and source-build fallbacks |
+| `POLINRIDER_SITE` | where to fetch the binary from |
+| `POLINRIDER_REPO` | `owner/repo` for the release and source-build fallbacks |
 | `POLINRIDER_NO_HUNT=1` | install the binary, skip the initial machine sweep |
 | `POLINRIDER_NO_INSTALL=1` | install the binary, do not start the guard |
 
@@ -119,9 +110,8 @@ cp target/release/polinrider-hunter.exe site/bin/polinrider-hunter-windows-x86_6
 ## Previewing locally
 
 ```sh
-cd site
+cd docs
 python -m http.server 8080
-# or: npx serve .
 ```
 
 Then open <http://localhost:8080>. On localhost `app.js` deliberately leaves the

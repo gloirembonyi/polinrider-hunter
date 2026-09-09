@@ -1,7 +1,7 @@
 #!/bin/sh
 # polinrider-hunter installer for Linux and macOS.
 #
-#     curl -fsSL https://polinrider-hunter.vercel.app/install.sh | sh
+#     curl -fsSL https://gloirembonyi.github.io/polinrider-hunter/install.sh | sh
 #
 # What it does, in order:
 #   1. Puts the binary in ~/.local/bin (no root required).
@@ -15,9 +15,10 @@
 set -eu
 
 # ---------------------------------------------------------------------------
-# CHANGE THIS ONE LINE if you deploy the site to your own domain.
+# Where the binary is fetched from. Override with POLINRIDER_SITE if you host
+# it somewhere else.
 # ---------------------------------------------------------------------------
-SITE="${POLINRIDER_SITE:-https://polinrider-hunter.vercel.app}"
+SITE="${POLINRIDER_SITE:-https://gloirembonyi.github.io/polinrider-hunter}"
 SITE="${SITE%/}"
 REPO="${POLINRIDER_REPO:-gloirembonyi/polinrider-hunter}"
 

@@ -9,20 +9,34 @@
   'use strict';
 
   /* ---------------------------------------------------------------------
-     The install URL points at whatever domain this page is served from.
-     Hardcoding a domain in the docs is how install instructions go stale;
-     if you fork this and deploy it elsewhere, the command stays correct.
+     The install URL points at wherever this page is actually served from.
+     Hardcoding it is how install instructions go stale; computing it means a
+     fork, a preview deploy or a move between hosts all stay correct.
+
+     `location.origin` alone is wrong on a GitHub Pages project site: the page
+     lives at https://user.github.io/repo/, so the origin omits the /repo
+     segment and the copied command would 404. What is needed is the directory
+     the page sits in.
      --------------------------------------------------------------------- */
+  function baseUrl() {
+    var path = location.pathname;
+    // Drop a trailing filename ("/repo/index.html" -> "/repo/").
+    path = path.replace(/\/[^\/]*\.[^\/]*$/, '/');
+    // Then drop trailing slashes so callers can append "/install.ps1".
+    return (location.origin + path).replace(/\/+$/, '');
+  }
+
   function applyOrigin() {
     var host = location.hostname;
-    // Keep the illustrative domain when previewing from disk or localhost —
-    // "file://" or "http://localhost:8080/install.ps1" would be useless to copy.
+    // Keep the illustrative URL when previewing from disk or localhost —
+    // "http://localhost:8080/install.ps1" would be useless to copy.
     if (!host || host === 'localhost' || host === '127.0.0.1' || location.protocol === 'file:') {
       return;
     }
+    var base = baseUrl();
     var nodes = document.querySelectorAll('[data-origin]');
     for (var i = 0; i < nodes.length; i++) {
-      nodes[i].textContent = location.origin;
+      nodes[i].textContent = base;
     }
   }
 

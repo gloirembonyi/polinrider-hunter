@@ -9,11 +9,11 @@
 <meta property="og:title" content="polinrider-hunter">
 <meta property="og:description" content="Find and remove the PolinRider supply-chain malware. One binary, no dependencies, runs in the background.">
 <meta property="og:type" content="website">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=Mulish:wght@400;600;700;800&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <div class="glow glow--one" aria-hidden="true"></div>
@@ -119,7 +119,7 @@
         <div class="pane" role="tabpanel" id="pane-win" aria-labelledby="tab-win">
           <div class="code">
             <pre><code><span class="c-cmt"># PowerShell</span>
-irm <span data-origin>https://polinrider-hunter.vercel.app</span>/install.ps1 | iex</code></pre>
+irm <span data-origin>https://gloirembonyi.github.io/polinrider-hunter</span>/install.ps1 | iex</code></pre>
             <button class="copy" type="button" aria-label="Copy command"></button>
           </div>
           <p class="pane__note">
@@ -133,7 +133,7 @@ irm <span data-origin>https://polinrider-hunter.vercel.app</span>/install.ps1 | 
         <div class="pane" role="tabpanel" id="pane-mac" aria-labelledby="tab-mac" hidden>
           <div class="code">
             <pre><code><span class="c-cmt"># Terminal — needs a Rust toolchain (see note)</span>
-curl -fsSL <span data-origin>https://polinrider-hunter.vercel.app</span>/install.sh | sh</code></pre>
+curl -fsSL <span data-origin>https://gloirembonyi.github.io/polinrider-hunter</span>/install.sh | sh</code></pre>
             <button class="copy" type="button" aria-label="Copy command"></button>
           </div>
           <p class="pane__note">
@@ -149,7 +149,7 @@ curl -fsSL <span data-origin>https://polinrider-hunter.vercel.app</span>/install
         <div class="pane" role="tabpanel" id="pane-linux" aria-labelledby="tab-linux" hidden>
           <div class="code">
             <pre><code><span class="c-cmt"># Terminal — needs a Rust toolchain (see note)</span>
-curl -fsSL <span data-origin>https://polinrider-hunter.vercel.app</span>/install.sh | sh</code></pre>
+curl -fsSL <span data-origin>https://gloirembonyi.github.io/polinrider-hunter</span>/install.sh | sh</code></pre>
             <button class="copy" type="button" aria-label="Copy command"></button>
           </div>
           <p class="pane__note">
@@ -165,8 +165,8 @@ curl -fsSL <span data-origin>https://polinrider-hunter.vercel.app</span>/install
     <div class="note note--warn">
       <p>
         <strong>Piping a script into a shell deserves scepticism</strong> — including this one.
-        Read it first: <a href="/install.ps1">install.ps1</a> ·
-        <a href="/install.sh">install.sh</a>. Both are short, and neither needs elevation.
+        Read it first: <a href="install.ps1">install.ps1</a> ·
+        <a href="install.sh">install.sh</a>. Both are short, and neither needs elevation.
         If you would rather not pipe anything, clone the repository and run
         <code>cargo build --release</code> from
         <a href="https://github.com/gloirembonyi/polinrider-hunter" rel="noopener">gloirembonyi/polinrider-hunter</a>; the binary works standalone.
@@ -801,13 +801,13 @@ polinrider-hunter status</code></pre>
     </div>
     <div style="display:flex;gap:18px">
       <a href="https://github.com/gloirembonyi/polinrider-hunter" rel="noopener">Source</a>
-      <a href="/install.ps1">install.ps1</a>
-      <a href="/install.sh">install.sh</a>
+      <a href="install.ps1">install.ps1</a>
+      <a href="install.sh">install.sh</a>
       <a href="#top">Back to top</a>
     </div>
   </div>
 </footer>
 
-<script src="/app.js" defer></script>
+<script src="app.js" defer></script>
 </body>
 </html>

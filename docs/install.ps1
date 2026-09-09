@@ -1,7 +1,7 @@
 <#
     polinrider-hunter installer for Windows.
 
-        irm https://polinrider-hunter.vercel.app/install.ps1 | iex
+        irm https://gloirembonyi.github.io/polinrider-hunter/install.ps1 | iex
 
     What it does, in order:
       1. Puts the binary in %LOCALAPPDATA%\Programs\polinrider-hunter and adds
@@ -17,9 +17,10 @@
 $ErrorActionPreference = 'Stop'
 
 # ---------------------------------------------------------------------------
-# CHANGE THIS ONE LINE if you deploy the site to your own domain.
+# Where the binary is fetched from. Override with $env:POLINRIDER_SITE if you
+# host it somewhere else.
 # ---------------------------------------------------------------------------
-$Site = if ($env:POLINRIDER_SITE) { $env:POLINRIDER_SITE.TrimEnd('/') } else { 'https://polinrider-hunter.vercel.app' }
+$Site = if ($env:POLINRIDER_SITE) { $env:POLINRIDER_SITE.TrimEnd('/') } else { 'https://gloirembonyi.github.io/polinrider-hunter' }
 
 # Set either of these to 1 to stop after installing the binary. Useful in CI, and
 # for anyone who wants the tool on PATH without it sweeping or starting a guard.

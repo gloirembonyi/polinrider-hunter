@@ -10,20 +10,20 @@ Rust standard library, on purpose.
 
 ## Install
 
-The page at [`site/`](site/) carries the installers and a prebuilt Windows
+The page at [`docs/`](docs/) carries the installers and a prebuilt Windows
 binary, so once it is deployed the one-liner works with no GitHub release
 involved.
 
 **Windows** (PowerShell):
 
 ```powershell
-irm https://your-domain/install.ps1 | iex
+irm https://gloirembonyi.github.io/polinrider-hunter/install.ps1 | iex
 ```
 
 **Linux / macOS**:
 
 ```sh
-curl -fsSL https://your-domain/install.sh | sh
+curl -fsSL https://gloirembonyi.github.io/polinrider-hunter/install.sh | sh
 ```
 
 Either puts the binary in a user directory (no administrator or root), sweeps the
@@ -364,17 +364,15 @@ with `path` repeating once per directory.
 
 ## The page
 
-[`site/`](site/) is a static page — `index.html`, `styles.css`, `app.js`, no
+<https://gloirembonyi.github.io/polinrider-hunter>
+
+[`docs/`](docs/) is a static page — `index.html`, `styles.css`, `app.js`, no
 build step — that explains all of this to someone who has just been told their
 machine might be infected. It carries the installers and the Windows binary, so
-deploying it is what makes the one-liner work.
+publishing it is what makes the one-liner work.
 
-```sh
-cd site && vercel --prod       # or: Root Directory = site, Framework = Other
-```
-
-See [`site/README.md`](site/README.md) for the one line to change afterwards and
-how to add macOS and Linux binaries.
+Served by GitHub Pages from `main` / `/docs`. See [`docs/README.md`](docs/README.md)
+for how it is wired and how to add macOS and Linux binaries.
 
 ---
 
