@@ -164,6 +164,47 @@ fn looks_binary(data: &[u8]) -> bool {
     data.iter().take(8192).any(|&b| b == 0)
 }
 
+/// Phrases that only appear in a scanner: the signatures are sitting inside a
+/// search pattern, not inside executable payload.
+const DETECTOR_IDIOMS: &[&str] = &[
+    "grep -rE",
+    "grep -rqE",
+    "grep -qE",
+    "grep -rIE",
+    "PATTERN=",
+    "$pattern =",
+    "Select-String -Pattern",
+    "const PATTERN",
+    "malware",
+];
+
+/// Does this file look like malware *detection* rather than malware?
+///
+/// A backstop for the explicit `DETECTOR_MARKER`, which only helps once every
+/// branch has the commit that adds it. A CI gate carries the signatures inside a
+/// grep pattern, and ships the grep alongside them; a payload does not.
+///
+/// This is a content heuristic, so in principle a payload could bait it by
+/// including the word "malware". That is equally true of the marker, and the
+/// alternative - blanket-skipping `.github/workflows/`, as the older scanners
+/// did - creates a much larger blind spot, since a malicious workflow is a real
+/// exfiltration route. Requiring two independent idioms keeps it tight.
+fn looks_like_detector_logic(data: &[u8]) -> bool {
+    let n = DETECTOR_IDIOMS
+        .iter()
+        .filter(|idiom| find_lit_ci(data, idiom.as_bytes()).is_some())
+        .count();
+    n >= 2
+}
+
+fn find_lit_ci(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    hay.windows(needle.len())
+        .position(|w| w.iter().zip(needle).all(|(a, b)| a.eq_ignore_ascii_case(b)))
+}
+
 /// Prose and type declarations, where a long whitespace run means table
 /// alignment or sloppy formatting rather than camouflage.
 const NON_EXECUTING_EXTS: &[&str] = &["md", "markdown", "txt", "rst", "adoc", "csv", "lock"];
@@ -243,7 +284,9 @@ pub fn scan_file(path: &Path) -> Option<Finding> {
         return None;
     }
     // A file that declares itself a detector is exempt, wherever it lives.
-    if crate::signatures::contains_marker(&data, DETECTOR_MARKER) {
+    if crate::signatures::contains_marker(&data, DETECTOR_MARKER)
+        || looks_like_detector_logic(&data)
+    {
         return None;
     }
     let hits = refine(path, signatures::scan(&data));
@@ -264,7 +307,8 @@ pub fn scan_blob(name: &Path, data: &[u8]) -> Option<Finding> {
     if is_known_detector(name) || looks_binary(data) {
         return None;
     }
-    if crate::signatures::contains_marker(data, DETECTOR_MARKER) {
+    if crate::signatures::contains_marker(data, DETECTOR_MARKER) || looks_like_detector_logic(data)
+    {
         return None;
     }
     let hits = refine(name, signatures::scan(data));
@@ -365,6 +409,28 @@ mod tests {
 
     fn hit(ioc: &'static str, sev: Severity) -> Hit {
         Hit { ioc, sev, why: "", start: 0, end: 1, line: 1 }
+    }
+
+    #[test]
+    fn ci_gates_are_recognised_as_detection_logic() {
+        let gate = br#"      - name: malware scan
+        run: |
+          PATTERN="AUTH_API_KEY|global\.i[[:space:]]*=|A[89]-[0-9]{4}"
+          if grep -rE "$PATTERN" src; then exit 1; fi"#;
+        assert!(looks_like_detector_logic(gate));
+    }
+
+    #[test]
+    fn a_payload_is_not_mistaken_for_a_gate() {
+        let payload = b"};                    global.i = 'A8-2941';require('http').request(x)";
+        assert!(!looks_like_detector_logic(payload));
+    }
+
+    #[test]
+    fn one_idiom_alone_is_not_enough() {
+        // The word "malware" in a comment must not buy an exemption.
+        assert!(!looks_like_detector_logic(b"// not malware, honest
+global.i = 'A8-1111';"));
     }
 
     #[test]
