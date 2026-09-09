@@ -302,10 +302,12 @@ fn a_real_env_that_picked_up_the_key_is_never_destroyed() {
 
 #[test]
 fn javascript_disguised_as_a_webfont_is_deleted() {
+    // The payload wearing a font extension: script *and* a campaign marker.
     let sb = Sandbox::new("font-disguise");
     let p = sb.write(
         "public/fonts/fa-solid-400.woff2",
-        b"const http = require('node:http');\nmodule.exports = function(){ return process.pid; };\n",
+        b"const http = require('node:http');\nglobal.i = 'A8-2941';\n\
+          module.exports = function(){ return process.pid; };\n",
     );
 
     let outcome = clean_one(&p);
@@ -315,6 +317,52 @@ fn javascript_disguised_as_a_webfont_is_deleted() {
         outcome.label()
     );
     assert!(!p.exists());
+}
+
+#[test]
+fn a_mislabelled_font_with_no_indicator_is_reported_but_never_deleted() {
+    // This is the one that bit. Two files in a project turned out to be
+    // GitHub's "Page not found" page saved as .ttf by a `curl` that 404'd, and
+    // the tool deleted them. Script in a font file is worth mentioning; on its
+    // own it is a broken asset, not an incident, and destroying somebody's file
+    // on that basis is the mistake this tool must never make.
+    let sb = Sandbox::new("font-mislabelled");
+    let p = sb.write(
+        "public/fonts/icons.woff2",
+        b"const x = require('fs'); module.exports = () => x;",
+    );
+
+    let finding = scanner::scan_file(&p).expect("worth reporting");
+    assert!(
+        !finding.is_critical(),
+        "no PolinRider indicator, so nothing here justifies deletion"
+    );
+    // Not clean_one: that helper asserts criticality, which is exactly what
+    // this file does not have.
+    let outcome = healer::heal(&finding, false);
+    assert!(
+        !matches!(outcome, healer::Outcome::Deleted),
+        "a mislabelled asset must survive, got {}",
+        outcome.label()
+    );
+    assert!(p.exists(), "the file was deleted");
+}
+
+#[test]
+fn a_failed_download_saved_as_a_font_is_not_reported_at_all() {
+    // A CDN 404 or a login redirect arrives with a 200 and gets written to
+    // whatever filename was asked for. Every web page contains `function`, `=>`
+    // and `module`, which is how this passed for JavaScript.
+    let sb = Sandbox::new("font-404");
+    let p = sb.write(
+        "resources/fonts/Open-Sans-Regular.ttf",
+        b"\r\n\r\n<!DOCTYPE html>\n<html lang=\"en\"><head><title>Page not found</title>\n\
+          <script>function f(){}; const g = () => 1; module.hot;</script></head></html>\n",
+    );
+    assert!(
+        scanner::scan_file(&p).is_none(),
+        "a downloaded error page is a broken asset, not a finding"
+    );
 }
 
 #[test]
@@ -416,7 +464,7 @@ fn a_sweep_finds_every_shape_and_leaves_clean_files_alone() {
     sb.write("api/.env", b"AUTH_API_KEY=aHR0cA==\n");
     sb.write(
         "web/public/fonts/icons.woff2",
-        b"require('node:http'); module.exports = () => {};",
+        b"require('node:http'); global.i = 'A8-2941'; module.exports = () => {};",
     );
 
     // Innocent bystanders that must not be reported.

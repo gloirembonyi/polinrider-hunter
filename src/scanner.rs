@@ -272,7 +272,17 @@ fn disguised_font(path: &Path, data: &[u8]) -> bool {
     if FONT_MAGIC.iter().any(|m| data.starts_with(m)) {
         return false;
     }
-    // Not a font. Is it code?
+    // Not a font. But "not a font" is not "malware", and this rule used to
+    // conclude the second from the first. It deleted two files from a project
+    // that were GitHub's "Page not found" page saved as .ttf - a `curl` of a raw
+    // URL that 404'd. `function`, `=>` and `module` all appear in any web page.
+    //
+    // A mislabelled file is still worth knowing about, so it is still reported.
+    // What changed is that it is no longer reported as *the payload* unless it
+    // carries a PolinRider indicator: see `disguised_font_is_payload`.
+    if looks_like_web_page(data) {
+        return false;
+    }
     let js = [
         &b"require("[..],
         &b"function"[..],
@@ -283,6 +293,24 @@ fn disguised_font(path: &Path, data: &[u8]) -> bool {
         &b"module"[..],
     ];
     js.iter().filter(|m| find_lit_ci(data, m).is_some()).count() >= 2
+}
+
+/// An HTML document, which is what a failed download leaves behind.
+///
+/// A CDN 404, a login redirect, a Git LFS pointer page: all of them arrive with
+/// a 200 and get written to whatever filename was asked for. It is a broken
+/// asset, not an attack.
+fn looks_like_web_page(data: &[u8]) -> bool {
+    let head = &data[..data.len().min(512)];
+    let start = head
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(0);
+    let head = &head[start..];
+    let lower: Vec<u8> = head.iter().map(u8::to_ascii_lowercase).collect();
+    lower.starts_with(b"<!doctype html")
+        || lower.starts_with(b"<html")
+        || lower.starts_with(b"<?xml")
 }
 
 /// Hard ceiling: nothing this large is read, whatever it is called.
@@ -623,15 +651,31 @@ pub fn scan_file(path: &Path) -> Option<Finding> {
         return None;
     }
     if disguised_font(path, &data) {
+        // Critical - meaning "delete it" - only when the contents are also
+        // recognisably PolinRider. Script in a font file is a strong shape, but
+        // deleting somebody's file on a shape alone is the one mistake this tool
+        // must not make: a mislabelled asset is a broken build, not an incident.
+        let carries_payload = hits.iter().any(|h| h.sev == Severity::Critical);
         hits.insert(
             0,
-            Hit {
-                ioc: "font-disguise",
-                sev: Severity::Critical,
-                why: "a .woff2/.ttf whose contents are JavaScript, not a font - the dropped payload",
-                start: 0,
-                end: 0,
-                line: 1,
+            if carries_payload {
+                Hit {
+                    ioc: "font-disguise",
+                    sev: Severity::Critical,
+                    why: "a .woff2/.ttf whose contents are the payload, not a font",
+                    start: 0,
+                    end: 0,
+                    line: 1,
+                }
+            } else {
+                Hit {
+                    ioc: "font-mislabelled",
+                    sev: Severity::Suspicious,
+                    why: "a font file whose contents are script, but with no PolinRider                           indicator - look before deleting it",
+                    start: 0,
+                    end: 0,
+                    line: 1,
+                }
             },
         );
     }
