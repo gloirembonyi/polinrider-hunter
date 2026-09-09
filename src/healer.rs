@@ -122,6 +122,34 @@ pub fn heal(finding: &Finding, dry_run: bool) -> Outcome {
     // inside a task's "command" - and cutting to end of line there leaves a
     // dangling `"command": "` and an unparseable file. Only the appended-pad
     // shape is safe here, and that always brings a `padding-run` hit with it.
+    // One structured shape *is* safely removable: a victim beacon appended to a
+    // browser extension's manifest. It is a whole key with a self-contained
+    // object value, so it can be excised by matching braces rather than cutting
+    // to end of line. `jsonbeacon` refuses unless the block really is a machine
+    // fingerprint and the result still parses.
+    if is_structured(path) {
+        if let Ok(data) = std::fs::read(path) {
+            if let Some(cleaned) = crate::jsonbeacon::strip(&data) {
+                if dry_run {
+                    return Outcome::Skipped(format!(
+                        "would remove a planted beacon block ({} bytes) (dry run)",
+                        data.len() - cleaned.len()
+                    ));
+                }
+                let iocs: Vec<&str> = finding.hits.iter().map(|h| h.ioc).collect();
+                if let Err(e) = quarantine(path, &iocs) {
+                    return Outcome::Failed(format!("quarantine: {e}"));
+                }
+                if let Err(e) = std::fs::write(path, &cleaned) {
+                    return Outcome::Failed(format!("write: {e}"));
+                }
+                return Outcome::Healed {
+                    removed: data.len() - cleaned.len(),
+                };
+            }
+        }
+    }
+
     if is_structured(path)
         && !finding.hits.iter().any(|h| h.ioc == signatures::PADDING_IOC)
     {

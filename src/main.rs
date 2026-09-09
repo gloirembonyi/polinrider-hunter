@@ -209,11 +209,16 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
         if !f.is_critical() {
             noted += 1;
             if !json {
+                // Say what fired. A bare path under a word like "review" is a
+                // demand with no information in it: the first question anybody
+                // asks is what was seen, and the answer is right here.
+                let iocs: Vec<&str> = f.hits.iter().map(|h| h.ioc).collect();
                 println!(
                     "  {} {}",
                     util::c(YELLOW, "review  "),
                     f.path.display()
                 );
+                println!("      {}", util::c(DIM, &iocs.join(", ")));
             }
             return;
         }
@@ -285,6 +290,23 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
         found,
         manual.len() + noted + persist_hits.len()
     );
+    if noted > 0 {
+        println!();
+        println!(
+            "{}",
+            util::c(
+                BOLD,
+                &format!("  {noted} file(s) marked \"review\" - nothing was changed in them")
+            )
+        );
+        println!(
+            "{}",
+            util::c(
+                DIM,
+                "  A weaker match than the ones cleaned above. It is usually one of:\n                   documentation or notes that quote the indicators; a JSON, YAML or UTF-16\n                   file where cutting bytes out would corrupt it; or a single weak signal\n                   with nothing to corroborate it. Open them and judge - or leave them,\n                   since a review finding is a question, not damage."
+            )
+        );
+    }
     if !persist_hits.is_empty() {
         println!(
             "{}",

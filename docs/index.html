@@ -60,7 +60,7 @@
       <span class="badge badge--ok"><span class="dot"></span>Windows &middot; macOS &middot; Linux</span>
       <span class="badge">Single binary, under 500&nbsp;KB</span>
       <span class="badge">Zero dependencies</span>
-      <span class="badge">104 tests</span>
+      <span class="badge">110 tests</span>
     </div>
 
     <h1 class="text-glow">The malware that<br>kept coming back.</h1>
@@ -461,6 +461,13 @@ polinrider-hunter status</code></pre>
             <td>Hidden detached stage 2 (<code>node -e</code>, <code>windowsHide</code>)</td>
             <td>its command line carries the stage-2 globals</td>
             <td><span class="tag tag--kill">stopped</span></td>
+          </tr>
+          <tr>
+            <td>Victim beacon planted in a browser extension&rsquo;s <code>manifest.json</code>
+                &mdash; campaign tag, account name, OS build and machine SID, under a
+                plausible-looking key</td>
+            <td>campaign tag beside three or more fingerprint fields</td>
+            <td><span class="tag tag--auto">removed</span></td>
           </tr>
           <tr>
             <td><code>temp_auto_push.bat</code> — rewrites git history with a back-dated <code>--no-verify</code> force-push</td>
