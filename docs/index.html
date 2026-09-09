@@ -914,10 +914,12 @@ polinrider-hunter uninstall --purge</code></pre>
       <dt>Will it slow my machine down?</dt>
       <dd>
         The guard uses 0.005&nbsp;s of CPU per 30-second pass and 4.7&nbsp;MB of memory,
-        at below-normal priority. A first full <code>hunt</code> is minutes rather than
-        seconds — it reads every candidate file under your home directory — and it prints
-        each directory as it goes so you can see where it is. It runs at background
-        priority too.
+        at below-normal priority. A full <code>hunt</code> is the heavy part: it reads
+        every candidate file under your home directory, which on a developer machine with
+        editors, browsers and installed applications means tens of thousands of files and
+        <strong>ten to twenty minutes</strong>. It is mostly waiting on the disk, it runs
+        at background priority, and it prints each directory as it goes so you can see
+        where it has got to. You only need it once; after that the guard watches.
       </dd>
 
       <dt>Could it damage my code?</dt>
