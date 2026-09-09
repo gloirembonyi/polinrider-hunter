@@ -784,3 +784,46 @@ fn install_does_not_hold_the_terminal_open_after_it_finishes() {
         "install should report a live guard:\n{text}"
     );
 }
+
+#[test]
+fn an_empty_file_is_not_a_finding() {
+    // The common empty file on a running machine is a lock, and it is also the
+    // common file a read is refused on - so it used to be reported as something
+    // needing review, under a heading that suggests indicators were seen.
+    let sb = Sandbox::new("empty");
+    let p = sb.write("parent.lock", b"");
+    assert!(
+        scanner::scan_file(&p).is_none(),
+        "an empty file cannot hold a payload and must not be reported"
+    );
+}
+
+#[test]
+fn a_file_held_open_by_something_else_is_not_a_finding() {
+    // Windows refuses the read with a sharing violation; that means busy, not
+    // suspicious. On other platforms an open file reads fine, so this only
+    // asserts that a normal readable file is judged on its contents.
+    let sb = Sandbox::new("inuse");
+    let p = sb.write("places.sqlite", b"SQLite format 3\0ordinary database bytes");
+    let _held = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&p)
+        .expect("hold the file open");
+
+    #[cfg(windows)]
+    {
+        // Reopen with no sharing, which is what a live application does.
+        use std::os::windows::fs::OpenOptionsExt;
+        let _exclusive = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&p);
+        assert!(
+            scanner::scan_file(&p).is_none(),
+            "a file another program holds open must not be reported"
+        );
+    }
+    #[cfg(not(windows))]
+    assert!(scanner::scan_file(&p).is_none());
+}

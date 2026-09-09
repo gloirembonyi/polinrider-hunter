@@ -123,6 +123,25 @@ pub fn skip_dir(name: &str) -> bool {
     SKIP_DIRS.contains(&name) || SKIP_SYSTEM_DIRS.contains(&name)
 }
 
+/// Was the read refused only because something else has the file open?
+///
+/// Distinguished from a genuine denial by the operating system's own code:
+/// a sharing or lock violation means "busy", where access-denied and the
+/// antivirus refusal mean "you may not look at this", which is worth saying.
+fn is_merely_in_use(e: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION.
+        return matches!(e.raw_os_error(), Some(32) | Some(33));
+    }
+    #[cfg(not(windows))]
+    {
+        // POSIX has no equivalent refusal: a file being open elsewhere does not
+        // stop us reading it. EAGAIN on a mandatory lock is the nearest thing.
+        return e.kind() == std::io::ErrorKind::WouldBlock;
+    }
+}
+
 /// Files whose presence is itself the finding.
 ///
 /// `temp_auto_push.bat` is the propagation script: it reads the last commit's
@@ -526,6 +545,13 @@ pub fn scan_file(path: &Path) -> Option<Finding> {
     if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
         return None;
     }
+    // An empty file holds nothing. Worth saying because the common empty file
+    // on a running machine is a lock - Firefox's `parent.lock`, and its like -
+    // which is also the common file we are refused a read on. Checking the
+    // length first keeps those out of the results entirely.
+    if meta.len() == 0 {
+        return None;
+    }
     // Large files that are not a known target are not worth the read.
     if meta.len() > MAX_INCIDENTAL_BYTES && !is_config_target(path) {
         return None;
@@ -533,11 +559,17 @@ pub fn scan_file(path: &Path) -> Option<Finding> {
     let data = match std::fs::read(path) {
         Ok(d) => d,
         Err(e) => {
-            // A file we cannot read is not a file we can call clean. Antivirus
-            // that has already identified the payload will deny the read
-            // outright ("the file contains a virus"), and treating that as
-            // "nothing found" is exactly backwards — it hides the strongest
-            // signal available behind a silent skip.
+            // "Another program has this open" is not a signal. A live database,
+            // a browser profile, a log being written: normal machines are full
+            // of them, and reporting each one buries the findings that matter.
+            if is_merely_in_use(&e) {
+                return None;
+            }
+            // A file we cannot read for any other reason is not a file we can
+            // call clean. Antivirus that has already identified the payload will
+            // deny the read outright ("the file contains a virus"), and treating
+            // that as "nothing found" is exactly backwards - it hides the
+            // strongest signal available behind a silent skip.
             return Some(Finding {
                 path: path.to_path_buf(),
                 hits: vec![Hit {
