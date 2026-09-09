@@ -1,0 +1,805 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>polinrider-hunter — find and remove the PolinRider malware</title>
+<meta name="description" content="A single 362 KB binary that detects and removes the PolinRider supply-chain malware from developer machines and git repositories, then keeps watching. Windows, macOS and Linux.">
+<meta name="color-scheme" content="dark light">
+<meta property="og:title" content="polinrider-hunter">
+<meta property="og:description" content="Find and remove the PolinRider supply-chain malware. One binary, no dependencies, runs in the background.">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=Mulish:wght@400;600;700;800&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="glow glow--one" aria-hidden="true"></div>
+<div class="glow glow--two" aria-hidden="true"></div>
+
+<!-- ====================================================================== -->
+<header class="nav">
+  <div class="wrap nav__inner">
+    <a class="brand" href="#top">
+      <svg class="brand__mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 2 4 5.5v6.2c0 4.6 3.2 8.7 8 10.3 4.8-1.6 8-5.7 8-10.3V5.5L12 2Z"
+              stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+        <path d="m8.6 12.1 2.3 2.3 4.5-4.6" stroke="#818cf8" stroke-width="1.9"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span class="brand__name">polinrider&#8209;hunter</span>
+      <span class="brand__ver">v1.0.0</span>
+    </a>
+    <nav class="nav__links">
+      <a href="#threat">The threat</a>
+      <a href="#detection">Detection</a>
+      <a href="#techniques">Coverage</a>
+      <a href="#guard">The guard</a>
+      <a href="#commands">Commands</a>
+      <a href="#install">Install</a>
+    </nav>
+    <button class="icon-btn" id="theme" type="button" aria-label="Switch between dark and light">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7"
+           stroke-linecap="round" aria-hidden="true" id="theme-icon">
+        <path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.6 6.6 0 0 0 9.8 9.8Z"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<!-- ====================================================================== -->
+<main id="top">
+
+<section class="hero">
+  <div class="wrap">
+    <div class="badge-row">
+      <span class="badge badge--ok"><span class="dot"></span>Guard active on 7 repositories</span>
+      <span class="badge">362 KB binary</span>
+      <span class="badge">Zero dependencies</span>
+      <span class="badge">72 tests</span>
+    </div>
+
+    <h1 class="text-glow">The malware that<br>kept coming back.</h1>
+
+    <p class="lede">
+      PolinRider hides a loader in one line of your build config, behind five hundred
+      characters of whitespace. It resolves its command server from the Ethereum
+      blockchain and leaves a hidden interpreter running long after the build ends.
+      This finds it, removes it, and keeps watching.
+    </p>
+
+    <div class="cta-row">
+      <a class="btn btn--primary" href="#install">
+        Clean this machine
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M5 12h14M13 6l6 6-6 6"/>
+        </svg>
+      </a>
+      <a class="btn" href="#threat">Understand the attack</a>
+    </div>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------------- -->
+<section id="install" class="reveal">
+  <div class="wrap">
+    <p class="eyebrow">Install</p>
+    <h2>One command. Then it looks after itself.</h2>
+    <p class="lede" style="margin-bottom:30px">
+      The installer puts a single binary in a user directory — no administrator or
+      root — sweeps the whole machine and cleans what it finds, then registers a
+      background guard that runs at every login.
+    </p>
+
+    <div class="install">
+      <div class="tabs" role="tablist" aria-label="Choose your operating system">
+        <button class="tab" role="tab" id="tab-win" aria-controls="pane-win" aria-selected="true" data-os="win">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.6l7.4-1v7.1H3V5.6Zm0 12.8 7.4 1v-7H3v6Zm8.6 1.2L21 21V12.7h-9.4v6.9Zm0-15.4v7.5H21V3l-9.4 1.2Z"/></svg>
+          Windows
+          <span class="tab__badge">binary</span>
+        </button>
+        <button class="tab" role="tab" id="tab-mac" aria-controls="pane-mac" aria-selected="false" data-os="mac">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.8c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.9-1.5-.1-2.8.8-3.5.8-.7 0-1.8-.8-3-.8-1.5 0-3 .9-3.8 2.3-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.3 2.9 2.3 1.2 0 1.6-.7 3-.7 1.4 0 1.8.7 3 .7 1.2 0 2-1.1 2.8-2.2.9-1.3 1.3-2.6 1.3-2.7-.1 0-2.5-1-2.5-3.6ZM14.3 5.6c.6-.8 1-1.8.9-2.9-.9.1-2 .6-2.7 1.4-.6.7-1 1.8-.9 2.8 1 .1 2-.5 2.7-1.3Z"/></svg>
+          macOS
+          <span class="tab__badge">source</span>
+        </button>
+        <button class="tab" role="tab" id="tab-linux" aria-controls="pane-linux" aria-selected="false" data-os="linux">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2c-2 0-3 1.8-3 4 0 1.3-.5 2-1.4 3.2C6.4 10.8 5 12.6 5 15c0 1.4.6 2.5 1.4 3.3-.2.5-.3 1-.2 1.4.2.8 1 1.3 2.2 1.3h7.2c1.2 0 2-.5 2.2-1.3.1-.4 0-.9-.2-1.4.8-.8 1.4-1.9 1.4-3.3 0-2.4-1.4-4.2-2.6-5.8C15.5 8 15 7.3 15 6c0-2.2-1-4-3-4Zm-1.3 4.2c.3 0 .6.4.6.9s-.3.9-.6.9-.6-.4-.6-.9.3-.9.6-.9Zm2.6 0c.3 0 .6.4.6.9s-.3.9-.6.9-.6-.4-.6-.9.3-.9.6-.9ZM12 9.4c.9 0 1.7.5 1.7.9 0 .3-.8.9-1.7.9s-1.7-.6-1.7-.9c0-.4.8-.9 1.7-.9Z"/></svg>
+          Linux
+          <span class="tab__badge">source</span>
+        </button>
+      </div>
+
+      <div class="panes">
+        <!-- Windows -->
+        <div class="pane" role="tabpanel" id="pane-win" aria-labelledby="tab-win">
+          <div class="code">
+            <pre><code><span class="c-cmt"># PowerShell</span>
+irm <span data-origin>https://polinrider-hunter.vercel.app</span>/install.ps1 | iex</code></pre>
+            <button class="copy" type="button" aria-label="Copy command"></button>
+          </div>
+          <p class="pane__note">
+            Downloads a prebuilt 362&nbsp;KB binary — nothing to compile. Installs to
+            <code>%LOCALAPPDATA%\Programs\polinrider-hunter</code> and adds it to your
+            user <code>PATH</code>. No administrator rights needed.
+          </p>
+        </div>
+
+        <!-- macOS -->
+        <div class="pane" role="tabpanel" id="pane-mac" aria-labelledby="tab-mac" hidden>
+          <div class="code">
+            <pre><code><span class="c-cmt"># Terminal — needs a Rust toolchain (see note)</span>
+curl -fsSL <span data-origin>https://polinrider-hunter.vercel.app</span>/install.sh | sh</code></pre>
+            <button class="copy" type="button" aria-label="Copy command"></button>
+          </div>
+          <p class="pane__note">
+            No signed macOS binary is published yet, so the installer builds from source —
+            about a minute. It needs <code>cargo</code>; if that is missing it tells you
+            exactly what to run rather than failing quietly:
+            <code>curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh</code>.
+            Installs to <code>~/.local/bin</code>.
+          </p>
+        </div>
+
+        <!-- Linux -->
+        <div class="pane" role="tabpanel" id="pane-linux" aria-labelledby="tab-linux" hidden>
+          <div class="code">
+            <pre><code><span class="c-cmt"># Terminal — needs a Rust toolchain (see note)</span>
+curl -fsSL <span data-origin>https://polinrider-hunter.vercel.app</span>/install.sh | sh</code></pre>
+            <button class="copy" type="button" aria-label="Copy command"></button>
+          </div>
+          <p class="pane__note">
+            Builds from source — about a minute, and it needs nothing from a package
+            registry because the project has no dependencies. Requires <code>cargo</code>
+            and <code>git</code>. Installs to <code>~/.local/bin</code>; the guard is
+            registered as a <code>systemd --user</code> service.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="note note--warn">
+      <p>
+        <strong>Piping a script into a shell deserves scepticism</strong> — including this one.
+        Read it first: <a href="/install.ps1">install.ps1</a> ·
+        <a href="/install.sh">install.sh</a>. Both are short, and neither needs elevation.
+        If you would rather not pipe anything, clone the repository and run
+        <code>cargo build --release</code>; the binary works standalone.
+      </p>
+    </div>
+
+    <h3 style="margin-top:38px">Already have the binary?</h3>
+    <div class="grid grid--2">
+      <div class="code">
+        <pre><code><span class="c-cmt"># clean this machine now, no setup</span>
+polinrider-hunter hunt
+
+<span class="c-cmt"># every drive, not just your home directory</span>
+polinrider-hunter hunt --drives</code></pre>
+        <button class="copy" type="button" aria-label="Copy command"></button>
+      </div>
+      <div class="code">
+        <pre><code><span class="c-cmt"># then keep it clean, forever</span>
+polinrider-hunter install
+
+<span class="c-cmt"># what is the guard doing?</span>
+polinrider-hunter status</code></pre>
+        <button class="copy" type="button" aria-label="Copy command"></button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------------- -->
+<section id="threat" class="reveal">
+  <div class="wrap">
+    <p class="eyebrow">The threat</p>
+    <h2>What PolinRider actually does</h2>
+    <p class="lede" style="margin-bottom:34px">
+      Worth understanding, because it explains every design decision underneath.
+    </p>
+
+    <div class="grid grid--2">
+      <div class="panel">
+        <span class="step__num">01 — HIDING</span>
+        <h3>It lives in a build config</h3>
+        <p class="small">
+          The payload is appended to <em>one line</em> of a file like
+          <code>postcss.config.mjs</code>, <code>tailwind.config.js</code> or
+          <code>eslint.config.mjs</code>, behind roughly 500 characters of spaces or
+          tabs. In an editor the code sits far off the right edge; in a diff the line
+          looks untouched.
+        </p>
+        <p class="small">
+          It runs on any <code>dev</code>, <code>build</code> or <code>lint</code> that
+          loads the config — and inside your editor too, because extensions like ESLint
+          and Tailwind IntelliSense execute the project config in their own Node process.
+        </p>
+      </div>
+
+      <div class="panel">
+        <span class="step__num">02 — COMMAND &amp; CONTROL</span>
+        <h3>Its C2 lives on a blockchain</h3>
+        <p class="small">
+          Rather than a domain that can be taken down, stage 1 reads the most recent
+          transaction from a hardcoded Ethereum sender through public RPC endpoints,
+          then decodes two IPv4 addresses out of the transaction's <code>to</code>
+          field — bytes 0–3 and 4–7.
+        </p>
+        <p class="small">
+          The operator moves the C2 by sending a cheap transaction. Nothing to seize,
+          nothing to blocklist. The technique is known as <em>EtherHiding</em>.
+        </p>
+      </div>
+
+      <div class="panel">
+        <span class="step__num">03 — DELIVERY</span>
+        <h3>Cleartext on port 443</h3>
+        <p class="small">
+          Stage 2 arrives over plain HTTP on port 443, which looks like TLS to anything
+          merely counting ports. The request wears a spoofed Chrome
+          <code>User-Agent</code> and carries a campaign id in a <code>Sec-V</code>
+          header.
+        </p>
+        <p class="small">
+          The response can deliver the payload in an <code>X-Payload-B64</code> header,
+          so a <code>HEAD</code> request leaves no body to inspect. It is XOR-encrypted
+          with a key baked into stage 1.
+        </p>
+      </div>
+
+      <div class="panel">
+        <span class="step__num">04 — PERSISTENCE</span>
+        <h3>It runs twice, once invisibly</h3>
+        <p class="small">
+          In-process via <code>eval</code>, and again as a detached child:
+        </p>
+        <div class="code" style="margin:12px 0 14px">
+          <pre><code>spawn(<span class="c-str">"node"</span>, [<span class="c-str">"-e"</span>, env + code], {
+  <span class="c-key">detached</span>: <span class="c-bad">true</span>,
+  <span class="c-key">stdio</span>: <span class="c-str">"ignore"</span>,
+  <span class="c-key">windowsHide</span>: <span class="c-bad">true</span>
+}).unref()</code></pre>
+        </div>
+        <p class="small">
+          A hidden interpreter with no console and no parent, which outlives the build
+          that started it. <code>require</code> and <code>module</code> are handed
+          across through globals, so stage 2 has the full run of Node.
+        </p>
+      </div>
+    </div>
+
+    <div class="note note--danger">
+      <p>
+        <strong>This is not hypothetical.</strong> A live stage 2 was found running on the
+        machine this tool was written on — parented by the code editor, C2 already
+        resolved, hours after every repository had been cleaned. Removing a file stops
+        the <em>next</em> build. It does nothing about the process already running.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------------- -->
+<section id="evasion" class="reveal">
+  <div class="wrap">
+    <p class="eyebrow">The gap</p>
+    <h2>Why it kept coming back</h2>
+    <p class="lede">
+      Three scanners already guarded these repositories: a pre-commit hook, a CI job
+      and a check in the Docker build. All three matched <code>global\.i=</code>.
+      The live variant writes it <strong>with spaces</strong>.
+    </p>
+
+    <div class="evasion" style="margin:30px 0">
+      <div class="evasion__row">
+        <span class="evasion__tag">caught</span>
+        <div class="evasion__bar"><span class="c-key">global.i=</span><span class="c-str">'A8-2941'</span>;…</div>
+      </div>
+      <div class="evasion__row">
+        <span class="evasion__tag" style="color:var(--danger)">missed for months</span>
+        <div class="evasion__bar"><span class="c-key">global.i&nbsp;=&nbsp;</span><span class="c-str">'A8-2941'</span>;…</div>
+      </div>
+      <div class="evasion__row">
+        <span class="evasion__tag">as it appears</span>
+        <div class="evasion__bar">};<span class="evasion__pad">····························································</span><span class="c-bad">global.i = 'A8-2941';…</span></div>
+      </div>
+    </div>
+
+    <p>
+      One character of whitespace walked it past every gate, while each of them reported
+      <em>clean</em>. Re-scanning with a corrected pattern found it on most branches of
+      every repository. Windows Defender missed this variant too.
+    </p>
+    <p class="muted small">
+      So this tool does not rely on a list of strings alone.
+    </p>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------------- -->
+<section id="detection" class="reveal">
+  <div class="wrap">
+    <p class="eyebrow">Detection</p>
+    <h2>Three layers, deliberately independent</h2>
+
+    <div class="grid grid--3" style="margin:30px 0">
+      <div class="panel">
+        <span class="step__num">LAYER 1</span>
+        <h3>Signatures</h3>
+        <p class="small">
+          Known strings: the dead-drop sender address, <code>/0x/cls</code>,
+          <code>X-Payload-B64</code>, <code>global['!']</code>, <code>_$_1e42</code>,
+          <code>AUTH_API_KEY</code>, campaign tags.
+        </p>
+        <p class="small muted">Fast and precise — but only for variants already seen.</p>
+      </div>
+      <div class="panel">
+        <span class="step__num">LAYER 2</span>
+        <h3>Structure</h3>
+        <p class="small">
+          A run of 200 or more spaces or tabs followed by code. Variant&#8209;agnostic: a
+          new build can change every string it contains, but not this.
+        </p>
+        <p class="small muted">
+          The padding <em>is</em> the camouflage. Dropping it means showing up in the editor.
+        </p>
+      </div>
+      <div class="panel">
+        <span class="step__num">LAYER 3</span>
+        <h3>Process</h3>
+        <p class="small">
+          Any running <code>node -e</code> whose command line carries the stage&#8209;2
+          globals — <code>global['_V']</code>, <code>global['_t_s']</code> and friends.
+        </p>
+        <p class="small muted">
+          Finds an infection whose file you already cleaned, or that arrived another way.
+        </p>
+      </div>
+    </div>
+
+    <div class="grid grid--2">
+      <div class="panel">
+        <h3>Severity is not decoration</h3>
+        <p class="small">
+          <strong>Critical</strong> means unambiguous, and is safe to remove
+          automatically. <strong>Suspicious</strong> means consistent with PolinRider but
+          plausible in honest code — Ethereum RPC hostnames, <code>windowsHide</code> —
+          and is only ever reported.
+        </p>
+        <p class="small">
+          Padding alone counts as critical <em>only</em> inside a file PolinRider is known
+          to target. In a README it is a markdown table, so it is dropped there entirely.
+        </p>
+      </div>
+      <div class="panel">
+        <h3>It does not flag the detectors</h3>
+        <p class="small">
+          Every malware scanner contains the strings it hunts for. Any file carrying the
+          token <code>POLINRIDER-HUNTER-DETECTOR</code> is skipped wherever it lives, so a
+          project opts its own gate out explicitly and the exemption travels with the file.
+        </p>
+        <p class="small">
+          CI gates are also recognised by content — signatures sitting inside a
+          <code>grep</code> pattern, next to the <code>grep</code> itself.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------------- -->
+<section id="techniques" class="reveal">
+  <div class="wrap">
+    <p class="eyebrow">Coverage</p>
+    <h2>Every technique, and what happens to it</h2>
+    <p class="lede" style="margin-bottom:28px">
+      Anything the tool will not clean automatically is reported with the reason, rather
+      than guessed at.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Technique</th><th>Detected by</th><th style="width:120px">Action</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Payload appended to a build config behind a space/tab pad</td>
+            <td>signatures + padding heuristic</td>
+            <td><span class="tag tag--auto">removed</span></td>
+          </tr>
+          <tr>
+            <td>The same, re-applied several times (reinfection)</td>
+            <td>as above</td>
+            <td><span class="tag tag--auto">removed</span></td>
+          </tr>
+          <tr>
+            <td>Injected <code>createRequire</code> shim manufacturing <code>require()</code> for an ESM config</td>
+            <td>correlated with the payload</td>
+            <td><span class="tag tag--auto">removed</span></td>
+          </tr>
+          <tr>
+            <td><code>global.i = '…'</code> written with spaces, tab padding</td>
+            <td><code>global\.i\s*=</code> and the padding heuristic</td>
+            <td><span class="tag tag--auto">removed</span></td>
+          </tr>
+          <tr>
+            <td>Obfuscated variant: <code>global['!']</code>, <code>_$_1e42</code>, modulus <code>4573868</code></td>
+            <td>signatures</td>
+            <td><span class="tag tag--auto">removed</span></td>
+          </tr>
+          <tr>
+            <td>NestJS dropper: injected <code>dotenv/config</code> + <code>atob</code>&nbsp;→&nbsp;<code>eval</code> IIFE</td>
+            <td>signatures</td>
+            <td><span class="tag tag--auto">removed</span></td>
+          </tr>
+          <tr>
+            <td>Dropped <code>.env</code> carrying only <code>AUTH_API_KEY</code></td>
+            <td>signatures</td>
+            <td><span class="tag tag--auto">deleted</span></td>
+          </tr>
+          <tr>
+            <td>Payload disguised as a webfont (<code>public/fonts/*.woff2</code> that is JavaScript)</td>
+            <td>font magic bytes vs. extension</td>
+            <td><span class="tag tag--auto">deleted</span></td>
+          </tr>
+          <tr>
+            <td>Hidden detached stage 2 (<code>node -e</code>, <code>windowsHide</code>)</td>
+            <td>its command line carries the stage-2 globals</td>
+            <td><span class="tag tag--kill">stopped</span></td>
+          </tr>
+          <tr>
+            <td>Ethereum dead-drop C2 and RPC hosts</td>
+            <td>signatures; RPC hosts corroborating only</td>
+            <td><span class="tag tag--manual">evidence</span></td>
+          </tr>
+          <tr>
+            <td><code>.vscode/tasks.json</code> auto-running the payload on <code>folderOpen</code></td>
+            <td>signatures</td>
+            <td><span class="tag tag--manual">reported</span></td>
+          </tr>
+          <tr>
+            <td><code>task.allowAutomaticTasks</code> arming that task</td>
+            <td>value-aware — <code>"off"</code> is never flagged</td>
+            <td><span class="tag tag--manual">reported</span></td>
+          </tr>
+          <tr>
+            <td>Config re-saved as <strong>UTF-16</strong> to slip past NUL-based binary checks</td>
+            <td>BOM detected, text decoded</td>
+            <td><span class="tag tag--manual">reported</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <p>
+        <strong>Two deliberate refusals.</strong> A byte-level cut is the right tool for an
+        appended payload and the wrong tool for structured or wide-character text. In
+        <code>.vscode/tasks.json</code> the indicator sits inside a task's
+        <code>"command"</code> value, and cutting to end of line would leave a dangling
+        <code>"command": "</code> and an unparseable file. For UTF-16, the match offsets
+        belong to the decoded text, not to the file's bytes. Both cases name the problem
+        instead of guessing — and there are tests holding each line.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------------- -->
+<section id="removal" class="reveal">
+  <div class="wrap">
+    <p class="eyebrow">Removal</p>
+    <h2>Surgical, and always reversible</h2>
+
+    <div class="grid grid--2" style="margin-bottom:24px">
+      <div class="panel">
+        <h3>Quarantine before writing</h3>
+        <p class="small">
+          Every original is copied aside and indexed before anything is modified, so a
+          wrong cut is always recoverable. <code>polinrider-hunter quarantine</code>
+          lists them with the indicators that triggered each one.
+        </p>
+      </div>
+      <div class="panel">
+        <h3>Never rewrite bytes we did not mean to</h3>
+        <p class="small">
+          Read the file to lines, edit, write the lines back — and you have silently
+          rewritten every line ending in it. On a CRLF repository that turns a one-line
+          security fix into a whole-file diff and buries the actual change in noise.
+        </p>
+        <p class="small">
+          So the healer splices the byte buffer and leaves every other byte untouched.
+        </p>
+      </div>
+    </div>
+
+    <p>
+      The cut starts at the <em>beginning of the whitespace pad</em>, so the camouflage
+      goes with the payload. Cutting repeats until the file is genuinely clean — a config
+      visited twice carries one pad and payload per visit, and stopping after the first
+      would leave the rest in place.
+    </p>
+
+    <div class="note">
+      <p>
+        <strong>Verified against the real thing.</strong> Healing the live payload out of an
+        infected <code>postcss.config.mjs</code> produces a file byte-identical to a
+        hand-reviewed fix — and 96 bytes smaller, because the injected
+        <code>createRequire</code> scaffolding goes too, leaving the genuinely pristine
+        original.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------------- -->
+<section id="guard" class="reveal">
+  <div class="wrap">
+    <p class="eyebrow">The guard</p>
+    <h2>Runs in the background. Costs nothing.</h2>
+    <p class="lede" style="margin-bottom:30px">
+      Three cadences, because the cheap check is the one worth running often.
+    </p>
+
+    <div class="grid grid--3" style="margin-bottom:30px">
+      <div class="panel">
+        <span class="step__num">EVERY 30 SECONDS</span>
+        <h3>Quick</h3>
+        <p class="small">
+          <code>stat</code>s a precomputed list of concrete target paths and reads a file
+          only when its mtime has actually moved. <strong>No directory walking at
+          all</strong> — an earlier version re-walked every repository twice a minute,
+          which is thousands of directory reads to discover nothing had changed.
+        </p>
+      </div>
+      <div class="panel">
+        <span class="step__num">EVERY 15 MINUTES</span>
+        <h3>Full</h3>
+        <p class="small">
+          Walks the watched trees properly, in case a variant picks a filename not on the
+          list, and rebuilds the quick pass's watch list. Also checks for hidden stage-2
+          processes.
+        </p>
+      </div>
+      <div class="panel">
+        <span class="step__num">EVERY HOUR</span>
+        <h3>Git refs</h3>
+        <p class="small">
+          Fetches and audits every branch, local and remote-tracking, reporting anything
+          that arrived upstream. <code>git grep</code> reads straight out of the object
+          database — no pull, no checkout, nothing written to your working tree.
+        </p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <p class="eyebrow" style="margin-bottom:22px">Measured, guarding seven repositories</p>
+      <div class="grid grid--4">
+        <div class="stat">
+          <span class="stat__val">0.005<span class="unit">s</span></span>
+          <span class="stat__label">CPU per quick pass</span>
+        </div>
+        <div class="stat">
+          <span class="stat__val">4.7<span class="unit">MB</span></span>
+          <span class="stat__label">Resident memory</span>
+        </div>
+        <div class="stat">
+          <span class="stat__val">362<span class="unit">KB</span></span>
+          <span class="stat__label">Binary on disk</span>
+        </div>
+        <div class="stat">
+          <span class="stat__val">Below<span class="unit">normal</span></span>
+          <span class="stat__label">Process priority</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="note">
+      <p>
+        <strong>What it will not do.</strong> The guard heals working trees. It never
+        rewrites git history and it never pushes — an automated process that force-pushes
+        to shared branches is a worse problem than the one it is solving. It reports what
+        it finds on a branch and leaves the decision to you.
+      </p>
+    </div>
+
+    <h3 style="margin-top:34px">Autostart is a text file you can read and delete</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th style="width:130px">Platform</th><th>Mechanism</th></tr></thead>
+        <tbody>
+          <tr><td>Windows</td><td><code>PolinRiderHunter.vbs</code> in the Startup folder — a one-line launcher, because a Startup shortcut to a console binary flashes a window</td></tr>
+          <tr><td>macOS</td><td><code>~/Library/LaunchAgents/com.polinrider.hunter.plist</code></td></tr>
+          <tr><td>Linux</td><td><code>~/.config/systemd/user/polinrider-hunter.service</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="small muted" style="margin-top:14px">
+      <code>status</code> prints the exact path. A security tool that installs itself
+      somewhere you cannot find is behaving like the thing it removes.
+    </p>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------------- -->
+<section id="commands" class="reveal">
+  <div class="wrap">
+    <p class="eyebrow">Reference</p>
+    <h2>Commands</h2>
+
+    <div class="table-scroll" style="margin-bottom:22px">
+      <table>
+        <thead><tr><th style="width:210px">Command</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>hunt</code></td><td>Sweep this whole machine: stop any running loader, find every infected file under your home directory, clean it. No setup needed. <code>--drives</code> covers every drive.</td></tr>
+          <tr><td><code>install [paths…]</code></td><td>Watch these directories, install a pre-commit hook in each repo, sweep them now, and start a guard at every login.</td></tr>
+          <tr><td><code>status</code></td><td>Where everything lives, and whether the guard is alive.</td></tr>
+          <tr><td><code>scan [paths…]</code></td><td>Report only; change nothing. Exit 1 if anything critical.</td></tr>
+          <tr><td><code>clean [paths…]</code></td><td>Scan, then remove payloads. <code>--dry-run</code> to preview.</td></tr>
+          <tr><td><code>repos [paths…]</code></td><td>Fetch and audit every branch, local and remote-tracking, without pulling or checking out.</td></tr>
+          <tr><td><code>procs</code></td><td>List hidden stage-2 processes. <code>--kill</code> stops them.</td></tr>
+          <tr><td><code>protect</code> / <code>unprotect</code></td><td>Install or remove just the pre-commit hook.</td></tr>
+          <tr><td><code>quarantine</code></td><td>List the originals kept aside during healing.</td></tr>
+          <tr><td><code>uninstall</code></td><td>Stop the guard and remove the hooks.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="grid grid--2">
+      <div>
+        <h3>In CI</h3>
+        <div class="code">
+          <pre><code><span class="c-key">- run</span>: polinrider-hunter scan . --json</code></pre>
+          <button class="copy" type="button" aria-label="Copy command"></button>
+        </div>
+        <p class="small muted" style="margin-top:12px">
+          Exits 1 on anything critical, so the job fails. Exit codes: <code>0</code> clean,
+          <code>1</code> found, <code>2</code> bad usage.
+        </p>
+      </div>
+      <div>
+        <h3>Audit a branch before it lands</h3>
+        <div class="code">
+          <pre><code>polinrider-hunter repos ~/work/some-repo</code></pre>
+          <button class="copy" type="button" aria-label="Copy command"></button>
+        </div>
+        <p class="small muted" style="margin-top:12px">
+          When what you are looking for is malware, you want to know what is on a branch
+          <em>before</em> it reaches your disk in a form something might execute.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------------- -->
+<section id="verified" class="reveal">
+  <div class="wrap">
+    <p class="eyebrow">Evidence</p>
+    <h2>How it was tested</h2>
+
+    <ul class="checks" style="margin-bottom:26px">
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>
+        <span><strong>72 automated tests</strong> — 56 unit, 16 end-to-end. The end-to-end suite plants each real attack shape on disk and asserts the payload is gone, the surrounding code is byte-for-byte unchanged, a second pass finds nothing, and the quarantined original still matches.</span>
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>
+        <span><strong>Against the real payload</strong> pulled from git history: all five critical indicators detected, 7,687 bytes removed, second pass silent, result byte-identical to a hand-reviewed fix.</span>
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>
+        <span><strong>A live guard test</strong> — a reinfected config with two payloads and mixed space/tab padding, planted in a watched repository. Caught all six indicators and healed both in one 30-second cycle.</span>
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>
+        <span><strong>Six planted infections across five project trees</strong> — all four config shapes, the dropped <code>.env</code>, and the payload wearing a <code>.woff2</code> extension. All removed in 542&nbsp;ms; three deliberately-clean bystanders untouched.</span>
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>
+        <span><strong>The tests found defects in the tool itself</strong> — incomplete cleaning of reinfected files, JSON corruption in <code>tasks.json</code>, and an unbounded search that could swallow unrelated code. All fixed, all with tests.</span>
+      </li>
+    </ul>
+
+    <div class="note">
+      <p>
+        Payloads in the test suite are <strong>inert</strong> — the recognisable shape of
+        PolinRider with a harmless body — so running the tests never puts working malware
+        on disk.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------------- -->
+<section id="faq" class="reveal">
+  <div class="wrap">
+    <p class="eyebrow">Questions</p>
+    <h2>Honest answers</h2>
+
+    <dl class="faq">
+      <dt>Does it work on Windows, macOS and Linux?</dt>
+      <dd>
+        Yes — one codebase, Rust standard library only, no platform-specific
+        dependencies. Windows currently gets a prebuilt binary; macOS and Linux build
+        from source in about a minute, which needs a Rust toolchain. That is a packaging
+        gap, not a portability one.
+      </dd>
+
+      <dt>Why no dependencies at all?</dt>
+      <dd>
+        Because the entire subject of this program is supply-chain compromise. Anything
+        it would have pulled a crate for — regex, file watching, JSON — is a small
+        purpose-built module instead. It also means the build needs no network access,
+        and there is nothing in it you cannot read.
+      </dd>
+
+      <dt>Will it slow my machine down?</dt>
+      <dd>
+        The guard uses 0.005&nbsp;s of CPU per 30-second pass and 4.7&nbsp;MB of memory,
+        at below-normal priority. A first full <code>hunt</code> is minutes rather than
+        seconds — it reads every candidate file under your home directory — and it prints
+        each directory as it goes so you can see where it is. It runs at background
+        priority too.
+      </dd>
+
+      <dt>Could it damage my code?</dt>
+      <dd>
+        Every original is quarantined before anything is written, so any cut is
+        reversible. The healer only ever removes a payload it can locate exactly, and
+        refuses outright on structured files and UTF-16 rather than guessing. Failing
+        loudly is the design.
+      </dd>
+
+      <dt>Does it phone home?</dt>
+      <dd>
+        No. It makes no network requests of its own. The only outbound traffic is
+        <code>git fetch</code> on repositories you asked it to watch, on the hourly ref
+        audit, which you can disable by setting <code>git_interval = 0</code> in the
+        config.
+      </dd>
+
+      <dt>Is antivirus enough?</dt>
+      <dd>
+        No. Windows Defender detects the older obfuscated variant as
+        <code>Trojan:NPM/PolinRider.DB!MTB</code>, but it did <strong>not</strong> flag
+        the newer spaced-<code>global.i</code> variant. Signature coverage is not the same
+        as coverage. There is a related trap: a file antivirus has locked cannot be read,
+        and a scanner that treats an unreadable file as a clean one hides the strongest
+        available signal — this one reports it as <code>read-blocked</code> instead.
+      </dd>
+
+      <dt>How do I remove it?</dt>
+      <dd>
+        <code>polinrider-hunter uninstall</code> stops the guard and removes the hooks,
+        then delete the binary. Config, log and quarantine are left in place — say so and
+        delete that directory too; <code>status</code> prints the path.
+      </dd>
+    </dl>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap footer__inner">
+    <div>
+      <strong style="color:var(--text)">polinrider-hunter</strong> · v1.0.0 · MIT
+      <span class="muted"> — built because three scanners all reported <em>clean</em>.</span>
+    </div>
+    <div style="display:flex;gap:18px">
+      <a href="/install.ps1">install.ps1</a>
+      <a href="/install.sh">install.sh</a>
+      <a href="#top">Back to top</a>
+    </div>
+  </div>
+</footer>
+
+<script src="/app.js" defer></script>
+</body>
+</html>
