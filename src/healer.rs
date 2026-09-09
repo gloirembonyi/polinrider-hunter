@@ -1,4 +1,5 @@
 //! Removing the payload without damaging the file around it.
+//! Detector opt-out marker: POLINRIDER-HUNTER-DETECTOR
 //!
 //! Two rules drive everything here:
 //!

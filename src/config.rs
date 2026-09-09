@@ -76,6 +76,30 @@ pub fn heartbeat_path() -> PathBuf {
     home().join("daemon.heartbeat")
 }
 
+/// Drop a Windows extended-length prefix, if present.
+///
+/// `\\?\C:\x` becomes `C:\x`, and the UNC form `\\?\UNC\srv\share` becomes
+/// `\\srv\share`. Split out from `normalize` so it can be tested without
+/// touching the filesystem.
+fn strip_verbatim(s: &str) -> Option<PathBuf> {
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return Some(PathBuf::from(format!(r"\\{rest}")));
+    }
+    s.strip_prefix(r"\\?\").map(PathBuf::from)
+}
+
+/// Resolve a path, dropping Windows' `\\?\` verbatim prefix.
+///
+/// `canonicalize` returns an extended-length path. It is correct, and the APIs
+/// accept it, but it leaks into the config file and into every line of output,
+/// so trim it back to the form a person recognises.
+pub fn normalize(p: &Path) -> PathBuf {
+    let abs = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    // into_owned() ends the borrow so `abs` can still be returned below.
+    let s = abs.to_string_lossy().into_owned();
+    strip_verbatim(&s).unwrap_or(abs)
+}
+
 /// Path of the running executable, resolved for autostart registration.
 pub fn exe_path() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from("polinrider-hunter"))
@@ -194,6 +218,21 @@ mod tests {
         // Unrecognised values keep the default rather than silently flipping.
         assert!(parse_bool("banana", true));
         assert!(!parse_bool("banana", false));
+    }
+
+    #[test]
+    fn verbatim_prefixes_are_stripped() {
+        assert_eq!(
+            strip_verbatim(r"\\?\C:\Users\x\repo"),
+            Some(PathBuf::from(r"C:\Users\x\repo"))
+        );
+        assert_eq!(
+            strip_verbatim(r"\\?\UNC\server\share\repo"),
+            Some(PathBuf::from(r"\\server\share\repo"))
+        );
+        // A path that never had the prefix is left for the caller to keep as-is.
+        assert_eq!(strip_verbatim(r"C:\Users\x"), None);
+        assert_eq!(strip_verbatim("/home/x/repo"), None);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 //! Finding the loader's running children.
+//! Detector opt-out marker: POLINRIDER-HUNTER-DETECTOR
 //!
 //! Cleaning the file on disk stops the *next* build from re-infecting you, but
 //! it does nothing about the process already running. Stage 1 ends with:

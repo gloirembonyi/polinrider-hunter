@@ -311,7 +311,7 @@ fn cmd_install(args: &Args, mut cfg: Config) -> i32 {
     let given: Vec<PathBuf> = args.positional.iter().map(PathBuf::from).collect();
     if !given.is_empty() {
         for p in given {
-            let abs = std::fs::canonicalize(&p).unwrap_or(p);
+            let abs = config::normalize(&p);
             if !cfg.paths.contains(&abs) {
                 cfg.paths.push(abs);
             }
