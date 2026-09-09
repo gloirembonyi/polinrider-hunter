@@ -127,6 +127,12 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
     let dry = args.has("--dry-run");
     let roots = config::machine_roots(all_drives);
 
+    // A hunt reads every candidate file on the machine, so it is the heaviest
+    // thing this tool does. Drop to background priority first: on a machine
+    // that is already short of memory, staying responsive while the sweep runs
+    // matters more than finishing it a little sooner.
+    service::lower_priority();
+
     if !json {
         println!("{}", util::c(BOLD, "PolinRider hunt"));
         for r in &roots {
