@@ -449,7 +449,25 @@ pub const PADDING_IOC: &str = "padding-run";
 /// tooling - editor extensions and dev scripts use them constantly. As the sole
 /// finding in a file they are noise; alongside a real indicator they are useful
 /// context about how the payload runs. So they are reported only in company.
-pub const CORROBORATING: &[&str] = &["hidden-spawn", "vscode-autorun"];
+pub const CORROBORATING: &[&str] = &[
+    "hidden-spawn",
+    "vscode-autorun",
+    // Every blockchain RPC call and endpoint. A crypto wallet extension, a web3
+    // library or a dApp legitimately contains all of these - a real sweep of one
+    // home directory flagged two browser wallets and nothing else. Beside a
+    // payload marker they explain how the loader reaches its C2; on their own
+    // they only describe software that talks to a blockchain.
+    "eth-rpc-block",
+    "eth-rpc-nonce",
+    "rpc-publicnode",
+    "rpc-drpc",
+    "rpc-1rpc",
+    "rpc-blastapi",
+    "rpc-tron",
+    "rpc-aptos",
+    "rpc-bsc",
+    "rpc-bsc-2",
+];
 
 #[derive(Debug, Clone)]
 pub struct Hit {

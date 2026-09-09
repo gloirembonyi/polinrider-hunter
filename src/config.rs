@@ -72,6 +72,15 @@ pub fn log_path() -> PathBuf {
 pub fn quarantine_dir() -> PathBuf {
     home().join("quarantine")
 }
+/// Sentinel dropped in a quarantine directory so the scanner recognises it.
+///
+/// `is_own_state` only knows about *this* install's home. Quarantines left by a
+/// different install, or by the test suite under a temporary `POLINRIDER_HOME`,
+/// are still full of infected originals - and a sweep that walks one will
+/// quarantine the quarantine. Marking the directory is how any of them is
+/// recognised, wherever it lives.
+pub const QUARANTINE_SENTINEL: &str = ".polinrider-quarantine";
+
 pub fn quarantine_index() -> PathBuf {
     quarantine_dir().join("index.jsonl")
 }

@@ -45,6 +45,15 @@ impl Outcome {
 fn quarantine(path: &Path, iocs: &[&str]) -> std::io::Result<PathBuf> {
     let dir = config::quarantine_dir();
     std::fs::create_dir_all(&dir)?;
+    // Mark it, so no scan - ours or another install's - ever walks into it.
+    let sentinel = dir.join(config::QUARANTINE_SENTINEL);
+    if !sentinel.exists() {
+        let _ = std::fs::write(
+            &sentinel,
+            b"Quarantined originals. They are infected by design; do not scan this directory.
+",
+        );
+    }
     let flat: String = path
         .to_string_lossy()
         .chars()

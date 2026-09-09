@@ -96,6 +96,14 @@ const SKIP_SYSTEM_DIRS: &[&str] = &[
     ".sbt",
 ];
 
+/// Is this directory a quarantine - ours, another install's, or a test's?
+///
+/// Cheap: one `exists()` per directory entered, which is nothing next to
+/// reading the files inside it.
+pub fn is_quarantine(dir: &Path) -> bool {
+    dir.join(crate::config::QUARANTINE_SENTINEL).exists()
+}
+
 /// Is this path inside our own state directory?
 ///
 /// The quarantine holds the *originals* of what we removed, so every file in it
@@ -478,11 +486,16 @@ fn refine(path: &Path, mut hits: Vec<Hit>) -> Vec<Hit> {
         }
     }
 
-    let has_standalone = hits
-        .iter()
-        .any(|h| !signatures::CORROBORATING.contains(&h.ioc));
+    // Corroborating indicators only count in company. Outside a file PolinRider
+    // targets, the padding heuristic joins them: a long whitespace run in a
+    // lockfile or an installer script is untidy formatting, and reporting it on
+    // its own trains people to ignore the tool.
+    let corroborating = |ioc: &str| {
+        signatures::CORROBORATING.contains(&ioc) || (!target && ioc == signatures::PADDING_IOC)
+    };
+    let has_standalone = hits.iter().any(|h| !corroborating(h.ioc));
     if !has_standalone {
-        hits.retain(|h| !signatures::CORROBORATING.contains(&h.ioc));
+        hits.retain(|h| !corroborating(h.ioc));
     }
     hits
 }
@@ -655,7 +668,7 @@ pub fn scan_tree_cb(root: &Path, quick: bool, on_finding: &mut dyn FnMut(Finding
                 }
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
-                if skip_dir(&name) || is_own_state(&path) {
+                if skip_dir(&name) || is_own_state(&path) || is_quarantine(&path) {
                     continue;
                 }
                 stack.push(path);
@@ -708,7 +721,10 @@ pub fn find_target_files(root: &Path) -> Vec<PathBuf> {
                     continue;
                 }
                 let name = entry.file_name();
-                if !skip_dir(&name.to_string_lossy()) && !is_own_state(&path) {
+                if !skip_dir(&name.to_string_lossy())
+                    && !is_own_state(&path)
+                    && !is_quarantine(&path)
+                {
                     stack.push(path);
                 }
             } else if meta.is_file() && is_config_target(&path) {
@@ -731,6 +747,18 @@ pub fn scan_paths(roots: &[PathBuf], quick: bool) -> Vec<Finding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_quarantine_anywhere_is_skipped() {
+        // A quarantine left by another install, or by the test suite under a
+        // temporary POLINRIDER_HOME, is still full of infected originals.
+        let tmp = std::env::temp_dir().join(format!("prh-q-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&tmp);
+        assert!(!is_quarantine(&tmp));
+        let _ = std::fs::write(tmp.join(crate::config::QUARANTINE_SENTINEL), b"x");
+        assert!(is_quarantine(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn our_own_state_directory_is_never_scanned() {
@@ -884,13 +912,53 @@ global.i = 'A8-1111';"));
     }
 
     #[test]
-    fn padding_outside_a_target_is_only_suspicious() {
-        let out = refine(
+    fn a_crypto_wallet_extension_is_not_reported() {
+        // Exactly what a browser wallet's provider.js looks like. Two real
+        // sweeps flagged these before the RPC indicators became corroborating.
+        let wallet = br#"const RPC=["https://eth.drpc.org","https://1rpc.io/eth"];
+async function n(){return rpc("eth_getBlockByNumber",[t,!0])}
+async function c(){return rpc("eth_getTransactionCount",[a])}"#;
+        assert!(scan_blob(Path::new("/x/ext/web3/provider.js"), wallet).is_none());
+    }
+
+    #[test]
+    fn but_an_rpc_call_beside_a_payload_marker_still_shows() {
+        let both = br#"global.i = 'A8-2941'; rpc("eth_getBlockByNumber")"#;
+        let f = scan_blob(Path::new("/x/postcss.config.mjs"), both).expect("flagged");
+        let ids: Vec<&str> = f.hits.iter().map(|h| h.ioc).collect();
+        assert!(ids.contains(&"global-i-assign"));
+        assert!(ids.contains(&"eth-rpc-block"), "context should survive: {ids:?}");
+    }
+
+    #[test]
+    fn lone_padding_outside_a_target_is_not_reported() {
+        let mut installer = b"@echo off".to_vec();
+        installer.extend(std::iter::repeat(b' ').take(300));
+        installer.extend_from_slice(b"goto :eof");
+        assert!(scan_blob(Path::new("/x/install.bat"), &installer).is_none());
+    }
+
+    #[test]
+    fn padding_outside_a_target_is_demoted_and_needs_company() {
+        // Alone it is dropped: a long whitespace run in an ordinary source file
+        // is formatting, not evidence.
+        let alone = refine(
             Path::new("/x/src/random.js"),
             vec![hit("padding-run", Severity::Critical)],
         );
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].sev, Severity::Suspicious);
+        assert!(alone.is_empty());
+
+        // Beside a real indicator it survives, demoted, as context.
+        let together = refine(
+            Path::new("/x/src/random.js"),
+            vec![
+                hit("padding-run", Severity::Critical),
+                hit("global-i-assign", Severity::Critical),
+            ],
+        );
+        assert_eq!(together.len(), 2);
+        let pad = together.iter().find(|h| h.ioc == "padding-run").unwrap();
+        assert_eq!(pad.sev, Severity::Suspicious);
     }
 
     #[test]

@@ -72,6 +72,28 @@ impl Drop for Sandbox {
     }
 }
 
+/// Remove the shared state directory once the whole suite has finished.
+///
+/// Each run used to leave a populated quarantine in TEMP, and a later
+/// machine-wide sweep would walk into it and "clean" the quarantined originals -
+/// which is how one hunt produced several hundred bogus findings. The scanner
+/// now skips any marked quarantine, but leaving litter behind was the first
+/// mistake and this fixes that one.
+struct SuiteCleanup;
+impl Drop for SuiteCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(shared_home());
+    }
+}
+
+#[test]
+fn zz_cleanup_the_shared_home() {
+    // Named to sort last. Not a real assertion: it exists so the suite leaves
+    // nothing in TEMP for a later sweep to trip over.
+    let _guard = SuiteCleanup;
+    assert!(shared_home().exists() || true);
+}
+
 /// The camouflage every sample uses: enough whitespace to push the payload off
 /// the right-hand edge of an editor.
 fn pad(n: usize, tabs: bool) -> Vec<u8> {

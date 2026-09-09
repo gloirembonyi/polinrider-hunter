@@ -1,0 +1,105 @@
+<!doctype html>
+<!-- POLINRIDER-HUNTER-DETECTOR: dashboard markup. Not malware. -->
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>polinrider-hunter monitor</title>
+<style>
+:root{--bg:#05060f;--panel:rgba(255,255,255,.035);--line:rgba(255,255,255,.08);
+--text:#f4f5fb;--muted:rgba(244,245,251,.45);--accent:#818cf8;--ok:#4ade80;
+--warn:#fbbf24;--bad:#f87171;
+--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);background-image:radial-gradient(circle at 50% 110%,#191645 0%,#05060f 55%,#010104 100%);
+background-attachment:fixed;color:var(--text);min-height:100vh;
+font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+.wrap{max-width:1000px;margin:0 auto;padding:28px 20px 60px}
+h1{font-size:1.35rem;margin:0 0 4px;font-weight:700}
+.sub{color:var(--muted);font-size:.85rem;margin-bottom:22px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px}
+.row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.badge{display:inline-flex;align-items:center;gap:8px;font-size:.72rem;font-weight:800;
+text-transform:uppercase;letter-spacing:.08em;padding:6px 13px;border-radius:999px;border:1px solid var(--line)}
+.ok{color:var(--ok);border-color:rgba(74,222,128,.35);background:rgba(74,222,128,.12)}
+.bad{color:var(--bad);border-color:rgba(248,113,113,.35);background:rgba(248,113,113,.12)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-top:18px}
+.stat b{display:block;font-size:2rem;font-weight:400;line-height:1.1}
+.stat span{font-size:.68rem;text-transform:uppercase;letter-spacing:.11em;color:var(--muted)}
+h2{font-size:.7rem;text-transform:uppercase;letter-spacing:.14em;color:var(--muted);margin:0 0 14px;font-weight:800}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+.t{color:var(--muted);white-space:nowrap;font-family:var(--mono);font-size:.76rem}
+.tag{font-size:.63rem;font-weight:800;letter-spacing:.07em;padding:3px 9px;border-radius:999px;white-space:nowrap;text-transform:uppercase}
+.tag.c{color:var(--ok);background:rgba(74,222,128,.12)}
+.tag.r{color:var(--warn);background:rgba(251,191,36,.12)}
+.tag.p{color:var(--bad);background:rgba(248,113,113,.12)}
+.tag.b{color:var(--accent);background:rgba(129,140,248,.12)}
+code{font-family:var(--mono);font-size:.82em;color:var(--muted);word-break:break-all}
+.muted{color:var(--muted)}
+.empty{color:var(--muted);padding:12px 0}
+.legend{font-size:.8rem;color:var(--muted);margin-top:14px;line-height:1.7}
+.legend b{color:var(--text);font-weight:700}
+.live{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);
+margin-right:7px;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){.live{animation:none}}
+</style></head><body><div class="wrap" id="app">loading…</div>
+<script>
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function age(s){if(s==null)return'never';s=Math.floor(s);
+ return s<60?s+'s ago':s<3600?Math.floor(s/60)+'m ago':Math.floor(s/3600)+'h ago'}
+function onoff(b){return b?'on':'OFF'}
+function render(d){
+ var g=d.guard,c=d.counts,cf=d.config;
+ var bits=[];
+ if(g.pid!=null)bits.push('pid '+g.pid);
+ if(g.beat_age!=null)bits.push('beat '+age(g.beat_age));
+ var rows=(d.events||[]);
+ document.getElementById('app').innerHTML=
+ '<h1>polinrider-hunter</h1>'+
+ '<div class="sub"><span class="live"></span>live monitor · '+esc(d.generated)+'</div>'+
+ '<div class="panel">'+
+  '<div class="row"><span class="badge '+(g.running?'ok':'bad')+'">'+
+   (g.running?'guard running':'guard not running')+'</span>'+
+   '<span class="muted">'+esc(bits.join(' · '))+'</span></div>'+
+  '<div class="grid">'+
+   '<div class="stat"><b>'+c.cleaned+'</b><span>cleaned</span></div>'+
+   '<div class="stat"><b>'+c.review+'</b><span>need review</span></div>'+
+   '<div class="stat"><b>'+c.processes_stopped+'</b><span>processes stopped</span></div>'+
+   '<div class="stat"><b>'+c.quarantined+'</b><span>quarantined</span></div>'+
+  '</div>'+
+  '<div class="legend">'+
+   '<b>cleaned</b> — the payload was removed and the file is back to normal.<br>'+
+   '<b>need review</b> — something matched, but it was not removed automatically: '+
+   'documentation that quotes indicators, a JSON or UTF-16 file where a byte-level cut '+
+   'would corrupt it, or a lone weak signal. Nothing was changed; look and decide.<br>'+
+   '<b>quarantined</b> — copies of originals kept before any edit, so every change is reversible.'+
+  '</div>'+
+ '</div>'+
+ '<div class="panel"><h2>Configuration</h2>'+
+  '<div class="muted" style="font-size:.86rem">'+
+   'quick '+cf.interval+'s · full '+cf.full+'s · git '+cf.git+'s<br>'+
+   'auto-heal '+onoff(cf.auto_heal)+' · notify '+onoff(cf.notify)+' · stop-processes '+onoff(cf.kill_procs)+
+  '</div><div style="margin-top:12px">'+
+   ((cf.paths||[]).map(function(p){return '<div><code>'+esc(p)+'</code></div>'}).join('')
+    ||'<span class="empty">no paths configured</span>')+
+  '</div></div>'+
+ '<div class="panel"><h2>Recent activity</h2>'+
+  (rows.length?'<table>'+rows.map(function(e){
+    var tag='',what='';
+    if(e.kind==='detect'){tag=e.ok?'<span class="tag c">cleaned</span>':'<span class="tag p">failed</span>';
+      what='<code>'+esc(e.detail)+'</code>'+(e.iocs?'<br><span class="muted" style="font-size:.78rem">'+esc(e.iocs)+'</span>':'')}
+    else if(e.kind==='notice'){tag='<span class="tag r">review</span>';
+      what='<code>'+esc(e.detail)+'</code>'+(e.iocs?'<br><span class="muted" style="font-size:.78rem">'+esc(e.iocs)+'</span>':'')}
+    else if(e.kind==='process'){tag='<span class="tag p">process</span>';what=esc(e.detail)}
+    else{tag='<span class="tag b">branch</span>';what='<code>'+esc(e.detail)+'</code>'}
+    return '<tr><td class="t">'+esc(e.time)+'</td><td>'+tag+'</td><td>'+what+'</td></tr>'}).join('')+'</table>'
+   :'<div class="empty">Nothing yet — a quiet log is the good outcome.</div>')+
+ '</div>'+
+ '<div class="sub">state: <code>'+esc(d.home)+'</code> · refreshes every 5s · read-only</div>'}
+function tick(){fetch('api/state',{cache:'no-store'}).then(function(r){return r.json()}).then(render)
+ .catch(function(){document.getElementById('app').innerHTML=
+  '<h1>monitor</h1><p class="sub">Lost contact with the monitor process — has it stopped?</p>'})}
+tick();setInterval(tick,5000);
+</script></body></html>

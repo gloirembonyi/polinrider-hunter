@@ -199,6 +199,12 @@ pub fn lower_priority() {
     }
 }
 
+/// The pid currently holding the heartbeat, if any.
+pub fn daemon_pid() -> Option<u32> {
+    let text = std::fs::read_to_string(config::heartbeat_path()).ok()?;
+    text.trim().split_whitespace().next()?.parse().ok()
+}
+
 /// Is a process id currently running? Shelled out, to stay dependency-free.
 pub fn pid_alive(pid: u32) -> bool {
     let pid_s = pid.to_string();
@@ -233,25 +239,169 @@ pub fn wait_for_daemon(interval: u64, secs: u64) -> bool {
     false
 }
 
-/// Stop a running guard, if there is one. Returns the pid it stopped.
-pub fn stop_daemon() -> Option<u32> {
-    let text = std::fs::read_to_string(config::heartbeat_path()).ok()?;
-    let pid: u32 = text.trim().split_whitespace().next()?.parse().ok()?;
-    if pid == std::process::id() || !pid_alive(pid) {
-        return None;
-    }
+/// What happened when we asked a guard to stop.
+///
+/// "Could not" and "there was nothing to stop" have to be distinguishable. A
+/// guard belonging to another session, or started elevated, refuses to die -
+/// and reporting that as "no guard was running" while an upgrade overwrites the
+/// binary underneath it is exactly the silent failure this tool exists to avoid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stopped {
+    Stopped(u32),
+    /// Alive, but the operating system would not let us end it.
+    Denied(u32),
+    None,
+}
+
+/// End a process, trying harder than one syscall.
+///
+/// `taskkill /F` is refused for some same-user processes - a detached child
+/// whose parent console is gone is the case seen in practice - while the WMI
+/// `Win32_Process.Terminate` on the same pid succeeds. Neither is reliable
+/// alone, so try the cheap one and fall back.
+fn end_process(pid: u32) -> bool {
     let pid_s = pid.to_string();
-    let ok = if cfg!(windows) {
-        util::run("taskkill", &["/F", "/PID", &pid_s]).ok
-    } else {
-        util::run("kill", &["-TERM", &pid_s]).ok
-    };
-    let _ = std::fs::remove_file(config::heartbeat_path());
-    if ok {
-        Some(pid)
-    } else {
-        None
+
+    #[cfg(windows)]
+    {
+        if util::run("taskkill", &["/F", "/PID", &pid_s]).ok {
+            return true;
+        }
+        let script = format!(
+            "$p = Get-CimInstance Win32_Process -Filter 'ProcessId={pid_s}' \
+             -ErrorAction SilentlyContinue; \
+             if ($p) {{ (Invoke-CimMethod -InputObject $p -MethodName Terminate).ReturnValue }} \
+             else {{ 0 }}"
+        );
+        let out = util::run(
+            "powershell",
+            &["-NoProfile", "-NonInteractive", "-Command", &script],
+        );
+        // Terminate answers 0 for success; anything else is a refusal.
+        return out.ok && out.stdout.trim() == "0";
     }
+
+    #[cfg(not(windows))]
+    {
+        if util::run("kill", &["-TERM", &pid_s]).ok {
+            // Give it a moment to leave politely before insisting.
+            for _ in 0..20 {
+                if !pid_alive(pid) {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+        util::run("kill", &["-KILL", &pid_s]).ok
+    }
+}
+
+/// Stop a running guard, if there is one.
+pub fn stop_daemon() -> Stopped {
+    let Ok(text) = std::fs::read_to_string(config::heartbeat_path()) else {
+        return Stopped::None;
+    };
+    let Some(pid) = text
+        .trim()
+        .split_whitespace()
+        .next()
+        .and_then(|p| p.parse::<u32>().ok())
+    else {
+        return Stopped::None;
+    };
+    if pid == std::process::id() {
+        return Stopped::None;
+    }
+    if !pid_alive(pid) {
+        // A stale heartbeat from a guard that crashed or was killed. Clearing it
+        // is the point: the next install would otherwise defer to a dead pid.
+        let _ = std::fs::remove_file(config::heartbeat_path());
+        return Stopped::None;
+    }
+    if !end_process(pid) {
+        // Leave the heartbeat alone. It is still accurate - that guard really is
+        // running - and deleting it would make `status` claim otherwise.
+        return Stopped::Denied(pid);
+    }
+    let _ = std::fs::remove_file(config::heartbeat_path());
+    // taskkill and kill both return as soon as the signal is delivered, not
+    // when the process is gone. An installer that overwrites the binary in that
+    // gap still hits a file lock, so wait for the handle to actually close.
+    for _ in 0..40 {
+        if !pid_alive(pid) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    if pid_alive(pid) {
+        Stopped::Denied(pid)
+    } else {
+        Stopped::Stopped(pid)
+    }
+}
+
+/// Stop any guard process that is not the one holding the heartbeat.
+///
+/// Upgrades are the reason this exists. A build old enough to predate the
+/// heartbeat file, or one orphaned when its state directory was purged, still
+/// holds an open handle to the executable and still runs its own scan loop.
+/// Matching by image name is blunt, so it deliberately excludes this process
+/// and anything that is not our own executable name.
+pub fn stop_stragglers() -> (usize, Vec<u32>) {
+    let me = std::process::id();
+    let mut stopped = 0;
+    let mut denied = Vec::new();
+
+    #[cfg(windows)]
+    {
+        // One CSV listing, then a targeted kill each: /IM would take out this
+        // process too, and there is no "except pid" filter.
+        let out = util::run(
+            "tasklist",
+            &["/FI", "IMAGENAME eq polinrider-hunter.exe", "/NH", "/FO", "CSV"],
+        );
+        for line in out.stdout.lines() {
+            // "polinrider-hunter.exe","1234","Console","1","4,712 K"
+            let Some(pid) = line
+                .split(',')
+                .nth(1)
+                .map(|f| f.trim_matches(['"', ' ']))
+                .and_then(|f| f.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if pid == me {
+                continue;
+            }
+            if end_process(pid) {
+                stopped += 1;
+            } else {
+                denied.push(pid);
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        // pkill would match this process; -o/--older is not portable, so list
+        // and filter. `pgrep -x` matches the executable name exactly.
+        let out = util::run("pgrep", &["-x", "polinrider-hunter"]);
+        for line in out.stdout.lines() {
+            let Ok(pid) = line.trim().parse::<u32>() else {
+                continue;
+            };
+            if pid == me {
+                continue;
+            }
+            if end_process(pid) {
+                stopped += 1;
+            } else {
+                denied.push(pid);
+            }
+        }
+    }
+
+    (stopped, denied)
 }
 
 /// Take the install directory back off the user's PATH.

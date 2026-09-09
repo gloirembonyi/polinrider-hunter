@@ -42,6 +42,27 @@ Write-Host 'polinrider-hunter installer' -ForegroundColor White
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
 
 # ---------------------------------------------------------------------------
+# 0. Make way for the new binary.
+#
+# Windows will not let you overwrite a running image. If a guard from an earlier
+# install is alive it holds this exact file open, and the download lands on a
+# locked path - which surfaces as "Cannot create a file when that file already
+# exists" and leaves the old build in charge while the installer claims success.
+# Ask it to stop, then verify nothing is still holding the file.
+# ---------------------------------------------------------------------------
+if (Test-Path $Exe) {
+    Step 'Stopping the running guard'
+    try { & $Exe stop 2>&1 | ForEach-Object { Info $_ } } catch { }
+    Get-Process -Name 'polinrider-hunter' -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+    # Handles close a moment after the process exits.
+    for ($i = 0; $i -lt 20; $i++) {
+        try { [IO.File]::Open($Exe, 'Open', 'Write').Dispose(); break }
+        catch { Start-Sleep -Milliseconds 250 }
+    }
+}
+
+# ---------------------------------------------------------------------------
 # 1. Obtain the binary
 # ---------------------------------------------------------------------------
 Step 'Fetching polinrider-hunter'
@@ -56,6 +77,14 @@ try {
     # that what arrived is actually a PE image rather than an error page.
     $head = [System.IO.File]::ReadAllBytes("$Exe.part") | Select-Object -First 2
     if ($head.Count -eq 2 -and $head[0] -eq 0x4D -and $head[1] -eq 0x5A) {
+        # Replace rather than move-over: if the file is somehow still held,
+        # renaming it aside works where overwriting does not, and Windows is
+        # happy to delete a renamed image once its last handle closes.
+        if (Test-Path $Exe) {
+            $old = "$Exe.old-$(Get-Random)"
+            try { Move-Item $Exe $old -Force; Remove-Item $old -Force -ErrorAction SilentlyContinue }
+            catch { Remove-Item $Exe -Force -ErrorAction SilentlyContinue }
+        }
         Move-Item "$Exe.part" $Exe -Force
         $got = $true
         Ok "installed to $Exe"

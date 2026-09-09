@@ -45,6 +45,19 @@ echo 'polinrider-hunter installer'
 mkdir -p "$INSTALL_DIR"
 
 # ---------------------------------------------------------------------------
+# Make way for the new binary.
+#
+# Unix will happily replace a running executable, but the guard that is already
+# running keeps executing the old image until it restarts - so an upgrade would
+# appear to work while the previous build stayed in charge. Stop it first; the
+# install step at the end starts the new one.
+# ---------------------------------------------------------------------------
+if [ -x "$EXE" ]; then
+    step 'Stopping the running guard'
+    "$EXE" stop 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------------------
 # Identify the platform
 # ---------------------------------------------------------------------------
 case "$(uname -s)" in

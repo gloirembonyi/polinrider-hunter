@@ -7,8 +7,8 @@
 use std::path::PathBuf;
 
 use polinrider_hunter::{
-    config, daemon, gitscan, healer, notify, persist, procscan, report, scanner, service,
-    util,
+    config, daemon, gitscan, healer, monitor, notify, persist, procscan, report, scanner,
+    service, util,
 };
 
 use config::Config;
@@ -21,6 +21,7 @@ struct Args {
     positional: Vec<String>,
     flags: Vec<String>,
     interval: Option<u64>,
+    port: Option<u16>,
 }
 
 fn parse_args() -> Args {
@@ -29,11 +30,16 @@ fn parse_args() -> Args {
     let mut positional = Vec::new();
     let mut flags = Vec::new();
     let mut interval = None;
+    let mut port = None;
     while let Some(a) = it.next() {
         if a == "--interval" {
             interval = it.next().and_then(|v| v.parse().ok());
         } else if let Some(v) = a.strip_prefix("--interval=") {
             interval = v.parse().ok();
+        } else if a == "--port" {
+            port = it.next().and_then(|v| v.parse().ok());
+        } else if let Some(v) = a.strip_prefix("--port=") {
+            port = v.parse().ok();
         } else if a.starts_with("--") {
             flags.push(a);
         } else {
@@ -45,6 +51,7 @@ fn parse_args() -> Args {
         positional,
         flags,
         interval,
+        port,
     }
 }
 
@@ -83,8 +90,10 @@ fn main() {
         "procs" => cmd_procs(&args),
         "persistence" => cmd_persistence(),
         "log" | "logs" => cmd_log(&args),
+        "monitor" | "dashboard" => cmd_monitor(&args, &cfg),
         "daemon" => daemon::run(&cfg, args.has("--once")),
         "install" => cmd_install(&args, cfg),
+        "stop" => cmd_stop(),
         "uninstall" => cmd_uninstall(&args),
         "test-notify" => cmd_test_notify(),
         "status" => cmd_status(&cfg),
@@ -466,6 +475,23 @@ fn cmd_unprotect(args: &Args, cfg: &Config) -> i32 {
     0
 }
 
+/// Live view of everything the guard is doing.
+fn cmd_monitor(args: &Args, cfg: &Config) -> i32 {
+    if args.has("--json") {
+        println!("{}", monitor::json_snapshot(cfg));
+        return 0;
+    }
+    if args.has("--web") {
+        let port = args.port.unwrap_or(8787);
+        return monitor::serve(cfg, port);
+    }
+    if args.has("--once") {
+        print!("{}", monitor::render(&monitor::snapshot(cfg)));
+        return 0;
+    }
+    monitor::watch(cfg, args.interval.unwrap_or(3))
+}
+
 /// Show what the guard has been doing.
 ///
 /// The commonest question about any background process is "is it actually doing
@@ -707,11 +733,38 @@ fn cmd_install(args: &Args, mut cfg: Config) -> i32 {
             ),
             Err(e) => eprintln!("could not register autostart: {e}"),
         }
+        // Hand over from any guard already running. Without this an upgrade
+        // silently keeps the old build alive: the new process finds the lock
+        // held, exits, and `install` reports success.
+        match service::stop_daemon() {
+            service::Stopped::Stopped(old) => {
+                println!("{} pid {old}", util::c(DIM, "stopped the previous guard,"))
+            }
+            service::Stopped::Denied(old) => println!(
+                "{} pid {old} {}",
+                util::c(YELLOW, "could not stop the previous guard,"),
+                util::c(DIM, "- it keeps running the older build")
+            ),
+            service::Stopped::None => {}
+        }
+        let _ = service::stop_stragglers();
+
         match service::spawn_daemon(&exe) {
             Ok(pid) => {
-                // Confirm it stayed up rather than trusting spawn().
+                // Confirm it stayed up rather than trusting spawn(). Report the
+                // pid that actually holds the heartbeat, not the one we spawned:
+                // if another guard was already running, ours exits immediately
+                // and printing its pid would name a dead process.
                 if service::wait_for_daemon(cfg.interval, 5) {
-                    println!("{} pid {pid}", util::c(GREEN, "guard running in background,"));
+                    let live = service::daemon_pid().unwrap_or(pid);
+                    if live == pid {
+                        println!("{} pid {live}", util::c(GREEN, "guard running in background,"));
+                    } else {
+                        println!(
+                            "{} pid {live}",
+                            util::c(GREEN, "a guard was already running,")
+                        );
+                    }
                 } else {
                     println!(
                         "{}",
@@ -750,6 +803,62 @@ fn cmd_test_notify() -> i32 {
     0
 }
 
+/// Stop the background guard, leaving everything else in place.
+///
+/// Needed on its own account - "pause it while I work" is a reasonable thing to
+/// want - but mostly it exists so an upgrade can free the executable before
+/// overwriting it. Windows refuses to replace a running image, and the
+/// installer failing halfway with a file-locking error is the worst outcome:
+/// the old guard keeps running and you think you upgraded.
+fn cmd_stop() -> i32 {
+    let mut denied: Vec<u32> = Vec::new();
+    let mut stopped = 0usize;
+
+    match service::stop_daemon() {
+        service::Stopped::Stopped(pid) => {
+            println!("{} pid {pid}", util::c(GREEN, "guard stopped,"));
+            stopped += 1;
+        }
+        service::Stopped::Denied(pid) => denied.push(pid),
+        service::Stopped::None => {}
+    }
+
+    // There may still be an older build running that never wrote a heartbeat,
+    // or one orphaned by a purge, so sweep by name as well.
+    let (extra, more_denied) = service::stop_stragglers();
+    stopped += extra;
+    denied.extend(more_denied);
+    if extra > 0 {
+        println!("{} {extra} other guard process(es)", util::c(GREEN, "stopped"));
+    }
+
+    if !denied.is_empty() {
+        let list = denied
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!(
+            "{} {list}",
+            util::c(YELLOW, "could not stop pid(s)")
+        );
+        eprintln!(
+            "{}",
+            util::c(
+                DIM,
+                "The operating system refused. That happens when the process belongs to
+                 another session or was started with higher privileges. Close the terminal
+                 that launched it, or end it from Task Manager / `sudo kill`, then retry."
+            )
+        );
+        return 1;
+    }
+    if stopped == 0 {
+        println!("{}", util::c(DIM, "no guard was running"));
+    }
+    0
+}
+
 fn cmd_uninstall(args: &Args) -> i32 {
     let purge = args.has("--purge") || args.has("--all");
     let mut removed: Vec<String> = Vec::new();
@@ -757,8 +866,21 @@ fn cmd_uninstall(args: &Args) -> i32 {
 
     // Stop the guard first, before removing anything it might rewrite.
     match service::stop_daemon() {
-        Some(pid) => removed.push(format!("stopped the guard (pid {pid})")),
-        None => kept.push("guard was not running".into()),
+        service::Stopped::Stopped(pid) => removed.push(format!("stopped the guard (pid {pid})")),
+        service::Stopped::Denied(pid) => kept.push(format!(
+            "could not stop the guard (pid {pid}) - end it from Task Manager or with sudo"
+        )),
+        service::Stopped::None => kept.push("guard was not running".into()),
+    }
+    // Older builds, or ones orphaned by a previous purge, hold no heartbeat but
+    // are still running. Leaving them behind is how "uninstalled" software keeps
+    // showing up in Task Manager.
+    let (orphans, denied) = service::stop_stragglers();
+    if orphans > 0 {
+        removed.push(format!("stopped {orphans} orphaned guard process(es)"));
+    }
+    for pid in denied {
+        kept.push(format!("guard process {pid} refused to stop"));
     }
 
     match service::uninstall_autostart() {
@@ -1016,6 +1138,10 @@ Detects and removes the PolinRider supply-chain malware.
   status                 Where everything lives and whether the guard is alive.
   log                    What the guard has been doing. --follow to watch live,
                          --all for the whole history.
+  monitor                Live dashboard in the terminal. --web serves it in a
+                         browser on localhost, --once for a single snapshot.
+  stop                   Stop the background guard, leaving everything else
+                         in place. Start it again with `install`.
   uninstall              Stop the guard and remove the hooks. --purge also
                          deletes the state directory, PATH entry and binary.
   test-notify            Send a notification, to check they reach you.
@@ -1040,6 +1166,8 @@ Detects and removes the PolinRider supply-chain malware.
   --kill                 procs: stop what is found.
   --drives               hunt: search every drive, not just your home directory.
   --interval <secs>      install: seconds between quick passes (default 30).
+                         monitor: seconds between redraws (default 3).
+  --port <n>             monitor --web: port to listen on (default 8787).
   --no-autostart         install: set up, but do not start at login.
   --no-color             Plain output.
 
