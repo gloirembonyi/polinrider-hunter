@@ -3,9 +3,17 @@
 <!-- POLINRIDER-HUNTER-DETECTOR: this file names malware indicators. Not malware. -->
 
 The Rust binary is the engine: it detects, removes, and guards, with no runtime
-to install. This directory holds the things that are simply *nicer* in Python —
-a live dashboard being the obvious one — and it is deliberately optional. Every
-protective function works without ever running anything here.
+to install. Every protective function works without ever running anything here.
+
+**Start with `polinrider-hunter monitor`.** The dashboard is now part of the
+binary — terminal view, `--web` for a browser view on localhost, `--once`,
+`--json` — so it works on any machine that ran the install command, from any
+directory, with nothing cloned and no Python. That is what almost everybody
+wants, and this directory is not it.
+
+What is left here is the same dashboard in Python, for anyone who has the repo
+checked out and would rather read or extend a script than a Rust module. It
+must be run from this directory, which is exactly why the built-in one exists.
 
 Standard library only. Python 3.8+. No `pip install`, on purpose: a tool about
 supply-chain compromise should not ask you to trust a dependency tree in order

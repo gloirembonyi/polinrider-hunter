@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Live monitor for polinrider-hunter.
 
+    Prefer `polinrider-hunter monitor` unless you have this repo checked out.
+    The same dashboard is built into the binary, works from any directory on
+    any machine that ran the install command, and needs no Python at all. This
+    script must be run from the directory it lives in.
+
     python monitor.py            live terminal dashboard
     python monitor.py --once     one snapshot, then exit (for scripts)
     python monitor.py --json     the same snapshot as JSON
