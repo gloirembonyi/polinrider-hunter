@@ -548,6 +548,16 @@ def main() -> int:
                     help="terminal refresh seconds (default 3)")
     args = ap.parse_args()
 
+    # Windows consoles still default to a legacy code page, and this dashboard
+    # draws with box characters and typographic dashes. Without this the script
+    # does not degrade - it raises UnicodeEncodeError and prints nothing at all,
+    # which is how somebody ends up thinking the guard is broken.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     if not HOME.exists():
         print(f"No polinrider-hunter state at {HOME}", file=sys.stderr)
         print("Install it first, or set POLINRIDER_HOME.", file=sys.stderr)
