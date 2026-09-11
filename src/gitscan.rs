@@ -2,7 +2,7 @@
 //! out.
 //!
 //! `git grep` can search any ref straight out of the object database, so a
-//! remote-tracking branch can be audited after a plain `fetch` — no pull, no
+//! remote-tracking branch can be audited after a plain `fetch` - no pull, no
 //! merge, no touching the working tree. That matters when the thing you are
 //! looking for is malware: you want to know what is on a branch *before* it
 //! reaches your disk in a form anything might execute.
@@ -250,7 +250,7 @@ pub fn stage(repo: &Path, file: &Path) -> bool {
     let rel = file.strip_prefix(repo).unwrap_or(file);
     let rel_s = rel.to_string_lossy().replace('\\', "/");
     // Only if git already tracks it. `git add` on an untracked file does not
-    // "re-stage" anything — it adds a brand-new entry to the index, which is
+    // "re-stage" anything - it adds a brand-new entry to the index, which is
     // not the guard's business and surfaces as a change the user never made.
     // Caught doing exactly that while testing: healing a planted file left it
     // staged as a new addition.

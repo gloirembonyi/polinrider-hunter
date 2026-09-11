@@ -70,11 +70,11 @@ function render(d){
    '<div class="stat"><b>'+c.quarantined+'</b><span>quarantined</span></div>'+
   '</div>'+
   '<div class="legend">'+
-   '<b>cleaned</b> — the payload was removed and the file is back to normal.<br>'+
-   '<b>need review</b> — something matched, but it was not removed automatically: '+
+   '<b>cleaned</b> - the payload was removed and the file is back to normal.<br>'+
+   '<b>need review</b> - something matched, but it was not removed automatically: '+
    'documentation that quotes indicators, a JSON or UTF-16 file where a byte-level cut '+
    'would corrupt it, or a lone weak signal. Nothing was changed; look and decide.<br>'+
-   '<b>quarantined</b> — copies of originals kept before any edit, so every change is reversible.'+
+   '<b>quarantined</b> - copies of originals kept before any edit, so every change is reversible.'+
   '</div>'+
  '</div>'+
  '<div class="panel"><h2>Configuration</h2>'+
@@ -95,11 +95,11 @@ function render(d){
     else if(e.kind==='process'){tag='<span class="tag p">process</span>';what=esc(e.detail)}
     else{tag='<span class="tag b">branch</span>';what='<code>'+esc(e.detail)+'</code>'}
     return '<tr><td class="t">'+esc(e.time)+'</td><td>'+tag+'</td><td>'+what+'</td></tr>'}).join('')+'</table>'
-   :'<div class="empty">Nothing yet — a quiet log is the good outcome.</div>')+
+   :'<div class="empty">Nothing yet - a quiet log is the good outcome.</div>')+
  '</div>'+
  '<div class="sub">state: <code>'+esc(d.home)+'</code> · refreshes every 5s · read-only</div>'}
 function tick(){fetch('api/state',{cache:'no-store'}).then(function(r){return r.json()}).then(render)
  .catch(function(){document.getElementById('app').innerHTML=
-  '<h1>monitor</h1><p class="sub">Lost contact with the monitor process — has it stopped?</p>'})}
+  '<h1>monitor</h1><p class="sub">Lost contact with the monitor process - has it stopped?</p>'})}
 tick();setInterval(tick,5000);
 </script></body></html>

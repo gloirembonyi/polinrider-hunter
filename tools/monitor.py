@@ -12,7 +12,7 @@
     python monitor.py --web      local web dashboard on http://127.0.0.1:8787
 
 The guard writes plain text to a state directory; this reads it and shows what
-is going on. It is strictly a reader — it never edits config, never heals
+is going on. It is strictly a reader - it never edits config, never heals
 anything, never stops the guard. That matters: a monitor you are not sure is
 read-only is a monitor you hesitate to run.
 
@@ -41,7 +41,7 @@ IS_WINDOWS = os.name == "nt"
 
 
 # ---------------------------------------------------------------------------
-# Where the guard keeps its state — mirrors config::home() in the Rust source
+# Where the guard keeps its state - mirrors config::home() in the Rust source
 # ---------------------------------------------------------------------------
 
 def state_home() -> Path:
@@ -158,7 +158,7 @@ def run(cmd: list[str]) -> str:
     """Run a helper, headless, and never raise."""
     kwargs = {}
     if IS_WINDOWS:
-        # Otherwise every poll flashes a console window — the exact bug the
+        # Otherwise every poll flashes a console window - the exact bug the
         # Rust side had to fix.
         si = subprocess.STARTUPINFO()
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -375,7 +375,7 @@ def render_terminal(snap: dict, c: C) -> str:
     events = [e for e in snap["events"] if e["kind"] in ("detect", "notice", "process", "ref")]
     out.append(c("1", "  Recent activity"))
     if not events:
-        out.append(c("2", "    nothing yet — the log is quiet, which is the good outcome"))
+        out.append(c("2", "    nothing yet - the log is quiet, which is the good outcome"))
     for e in events[-14:]:
         when = c("2", e["time"][5:16])
         if e["kind"] == "detect":
@@ -484,13 +484,13 @@ function render(d){
     else if(e.kind==='process'){tag='<span class="tag p">process</span>';what=`pid ${esc(e.pid)} <span class="muted">${esc(e.marker)}</span> ${esc(e.outcome)}`}
     else if(e.kind==='ref'){tag='<span class="tag b">branch</span>';what=`${esc(e.ref)} :: <code>${esc(e.file)}</code>`}
     return `<tr><td class="t">${esc(e.time)}</td><td>${tag}</td><td>${what}</td></tr>`}).join('')}</table>`
-   :'<div class="empty">Nothing yet — a quiet log is the good outcome.</div>'}
+   :'<div class="empty">Nothing yet - a quiet log is the good outcome.</div>'}
  </div>
  <div class="panel"><h2>Quarantine</h2>
   ${(d.quarantine||[]).length?`<table>${d.quarantine.slice().reverse().map(q=>
     `<tr><td class="t">${esc(q.time)}</td><td><code>${esc(q.original)}</code><br>
      <span class="muted" style="font-size:.78rem">${esc((q.iocs||[]).join(', '))}</span></td></tr>`).join('')}</table>`
-   :'<div class="empty">Empty — nothing has been removed from your files.</div>'}
+   :'<div class="empty">Empty - nothing has been removed from your files.</div>'}
  </div>
  <div class="sub">state: <code>${esc(d.home)}</code> · refreshes every 5s · read-only</div>`}
 function tick(){fetch('api/state',{cache:'no-store'}).then(r=>r.json()).then(render)
@@ -527,7 +527,7 @@ def serve(port: int) -> int:
     # and has no business being reachable from the network.
     server = HTTPServer(("127.0.0.1", port), Handler)
     print(f"monitor on http://127.0.0.1:{port}  (Ctrl+C to stop)")
-    print("bound to localhost only — it is not reachable from the network")
+    print("bound to localhost only - it is not reachable from the network")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

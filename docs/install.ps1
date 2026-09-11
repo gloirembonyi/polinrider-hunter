@@ -79,7 +79,7 @@ if ((Test-Path $Exe) -and (Get-Process -Name 'polinrider-hunter' -ErrorAction Si
 Step 'Fetching polinrider-hunter'
 $got = $false
 
-# (a) Published next to this script — no toolchain needed.
+# (a) Published next to this script - no toolchain needed.
 try {
     $url = "$Site/bin/$Asset"
     Info "trying $url"

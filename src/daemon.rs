@@ -2,14 +2,14 @@
 //!
 //! Three cadences, because the cheap check is the one worth running often:
 //!
-//! * **quick** (default 30s) — `stat` a precomputed list of concrete target
+//! * **quick** (default 30s) - `stat` a precomputed list of concrete target
 //!   paths, and read one only when its mtime has moved. No directory walking at
 //!   all: an earlier version re-walked every watched repository twice a minute,
 //!   which is thousands of directory reads for nothing and the reason this felt
 //!   heavy. Catches a fresh infection within half a minute at near-zero cost.
-//! * **full** (default 15m) — walk the watched trees properly, in case a
+//! * **full** (default 15m) - walk the watched trees properly, in case a
 //!   variant picks a filename we have not seen before.
-//! * **git** (default 1h) — fetch and audit every ref, reporting anything that
+//! * **git** (default 1h) - fetch and audit every ref, reporting anything that
 //!   arrived on a branch upstream.
 //!
 //! The daemon heals working trees. It never rewrites history and never pushes:

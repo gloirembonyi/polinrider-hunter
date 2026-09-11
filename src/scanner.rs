@@ -690,8 +690,8 @@ pub fn scan_file(path: &Path) -> Option<Finding> {
     }
 }
 
-/// Match bytes that came from somewhere other than the filesystem — a git blob,
-/// say — applying the same detector exemptions as `scan_file`.
+/// Match bytes that came from somewhere other than the filesystem - a git blob,
+/// say - applying the same detector exemptions as `scan_file`.
 pub fn scan_blob(name: &Path, data: &[u8]) -> Option<Finding> {
     if is_known_detector(name) || looks_binary(data) {
         return None;

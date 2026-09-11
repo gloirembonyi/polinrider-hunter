@@ -1,5 +1,5 @@
 /* =========================================================================
-   polinrider-hunter — site behaviour
+   polinrider-hunter - site behaviour
 
    No framework, no build step. Everything here degrades to a perfectly usable
    page if it fails to run: the tabs are real buttons, the commands are already
@@ -28,7 +28,7 @@
 
   function applyOrigin() {
     var host = location.hostname;
-    // Keep the illustrative URL when previewing from disk or localhost —
+    // Keep the illustrative URL when previewing from disk or localhost -
     // "http://localhost:8080/install.ps1" would be useless to copy.
     if (!host || host === 'localhost' || host === '127.0.0.1' || location.protocol === 'file:') {
       return;
@@ -83,7 +83,7 @@
   function detectOs() {
     var ua = (navigator.userAgent || '') + ' ' + (navigator.platform || '');
     // Order matters: iOS reports "Mac" in some UA strings, and Android
-    // contains "Linux" — neither is a target here, but Linux is the safer
+    // contains "Linux" - neither is a target here, but Linux is the safer
     // fallback for anything unix-shaped.
     if (/Win/i.test(ua)) return 'win';
     if (/Mac|iPhone|iPad|iPod/i.test(ua)) return 'mac';
@@ -177,7 +177,7 @@
             btn.setAttribute('aria-label', 'Copy command');
           }, 1600);
         }).catch(function () {
-          btn.setAttribute('aria-label', 'Copy failed — select the text instead');
+          btn.setAttribute('aria-label', 'Copy failed - select the text instead');
         });
       });
     });

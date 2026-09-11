@@ -125,7 +125,7 @@ pub static IOCS: &[Ioc] = &[
     Ioc {
         id: "eval-proxyinfo",
         sev: Severity::Critical,
-        why: "eval(proxyInfo) — remote code execution in the dropper",
+        why: "eval(proxyInfo) - remote code execution in the dropper",
         kind: Kind::Lit("eval(proxyInfo)"),
     },
     Ioc {
@@ -363,7 +363,7 @@ pub static IOCS: &[Ioc] = &[
     Ioc {
         id: "eth-rpc-block",
         sev: Severity::Suspicious,
-        why: "Ethereum block lookup — how the loader resolves its C2",
+        why: "Ethereum block lookup - how the loader resolves its C2",
         kind: Kind::Lit("eth_getBlockByNumber"),
     },
     Ioc {
@@ -399,7 +399,7 @@ pub static IOCS: &[Ioc] = &[
     Ioc {
         id: "hidden-spawn",
         sev: Severity::Suspicious,
-        why: "windowsHide — how stage 2 is spawned without a visible console",
+        why: "windowsHide - how stage 2 is spawned without a visible console",
         kind: Kind::Lit("windowsHide"),
     },
     Ioc {

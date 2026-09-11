@@ -111,7 +111,7 @@ pub fn print_ref_hits(hits: &[RefHit], json: bool) {
 
 pub fn summary_line(found: usize, healed: usize) {
     if found == 0 {
-        println!("{}", util::c(GREEN, "clean — nothing found"));
+        println!("{}", util::c(GREEN, "clean - nothing found"));
     } else {
         println!(
             "{} {} finding(s), {} healed",

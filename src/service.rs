@@ -14,7 +14,7 @@ use crate::util;
 /// Where the login hook lives on this platform.
 ///
 /// Exactly one of these bodies survives `cfg`, and it is the function's tail
-/// expression — so no `return`, which would leave the signature returning `()`.
+/// expression - so no `return`, which would leave the signature returning `()`.
 #[cfg(windows)]
 pub fn autostart_path() -> PathBuf {
     let appdata = std::env::var("APPDATA").unwrap_or_default();

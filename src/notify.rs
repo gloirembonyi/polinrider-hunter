@@ -6,8 +6,8 @@
 //!
 //! Every path shells out to something already present on the platform, so the
 //! zero-dependency promise holds. Notifications are best-effort by design: if
-//! the desktop is not there — a headless server, a locked session, an SSH
-//! shell — the failure is silent and the log still has the detail. A scanner
+//! the desktop is not there - a headless server, a locked session, an SSH
+//! shell - the failure is silent and the log still has the detail. A scanner
 //! that refused to run because it could not raise a toast would be worse than
 //! one that stays quiet.
 
@@ -82,7 +82,7 @@ fn windows_toast(title: &str, body: &str, level: Level) {
     // directory does not have. NotifyIcon works on every supported Windows and
     // needs no registration.
     //
-    // The helper has to outlive the balloon, so it sleeps — which is why this is
+    // The helper has to outlive the balloon, so it sleeps - which is why this is
     // spawned and never waited on.
     let icon = if level == Level::NeedsYou { "Warning" } else { "Info" };
     let script = format!(

@@ -7,7 +7,7 @@
 //! over it, and assert both that the payload is gone *and* that the legitimate
 //! code around it survived untouched.
 //!
-//! Every payload here is inert — it is the recognisable *shape* of PolinRider
+//! Every payload here is inert - it is the recognisable *shape* of PolinRider
 //! with a harmless body, so the suite is safe to run and does not ship working
 //! malware. Where the exact bytes matter (padding length, line endings) they are
 //! reproduced faithfully.

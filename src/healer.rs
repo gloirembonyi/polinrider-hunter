@@ -5,8 +5,8 @@
 //!
 //! 1. **Quarantine before writing.** Every original is copied aside first, so a
 //!    wrong cut is always recoverable.
-//! 2. **Never rewrite bytes we did not mean to change.** The obvious approach —
-//!    read to lines, edit, write lines back — silently rewrites every line
+//! 2. **Never rewrite bytes we did not mean to change.** The obvious approach -
+//!    read to lines, edit, write lines back - silently rewrites every line
 //!    ending in the file. On a CRLF repo that turns a one-line fix into a
 //!    whole-file diff and buries the security change in noise. So we splice the
 //!    byte buffer and leave every other byte untouched.
@@ -332,12 +332,12 @@ pub fn strip(data: &[u8]) -> Option<Vec<u8>> {
 
 /// Remove one payload.
 fn strip_once(data: &[u8]) -> Option<Vec<u8>> {
-    // Shape 1: the NestJS dropper — an injected `import 'dotenv/config'` plus a
+    // Shape 1: the NestJS dropper - an injected `import 'dotenv/config'` plus a
     // self-invoking async block that decodes a URL, fetches code and evals it.
     if let Some(out) = strip_iife_dropper(data) {
         return Some(out);
     }
-    // Shape 2: everything else seen so far — one line of legitimate code, a long
+    // Shape 2: everything else seen so far - one line of legitimate code, a long
     // whitespace pad, then the payload out to end of line.
     strip_padded_tail(data)
 }

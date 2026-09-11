@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>polinrider-hunter — find and remove the PolinRider malware</title>
+<title>polinrider-hunter - find and remove the PolinRider malware</title>
 <meta name="description" content="A single 397 KB binary that detects and removes the PolinRider supply-chain malware from developer machines and git repositories, then keeps watching. Windows, macOS and Linux.">
 <meta name="color-scheme" content="dark light">
 <meta property="og:title" content="polinrider-hunter">
@@ -93,8 +93,8 @@
     <p class="eyebrow">Install</p>
     <h2>One command. Then it looks after itself.</h2>
     <p class="lede" style="margin-bottom:30px">
-      The installer puts a single binary in a user directory — no administrator or
-      root — sweeps the whole machine and cleans what it finds, then registers a
+      The installer puts a single binary in a user directory - no administrator or
+      root - sweeps the whole machine and cleans what it finds, then registers a
       background guard that runs at every login.
     </p>
 
@@ -126,7 +126,7 @@ irm <span data-origin>https://gloirembonyi.github.io/polinrider-hunter</span>/in
             <button class="copy" type="button" aria-label="Copy command"></button>
           </div>
           <p class="pane__note">
-            Downloads a prebuilt 397&nbsp;KB binary — nothing to compile. Installs to
+            Downloads a prebuilt 397&nbsp;KB binary - nothing to compile. Installs to
             <code>%LOCALAPPDATA%\Programs\polinrider-hunter</code> and adds it to your
             user <code>PATH</code>. No administrator rights needed.
           </p>
@@ -135,12 +135,12 @@ irm <span data-origin>https://gloirembonyi.github.io/polinrider-hunter</span>/in
         <!-- macOS -->
         <div class="pane" role="tabpanel" id="pane-mac" aria-labelledby="tab-mac" hidden>
           <div class="code">
-            <pre><code><span class="c-cmt"># Terminal — needs a Rust toolchain (see note)</span>
+            <pre><code><span class="c-cmt"># Terminal - needs a Rust toolchain (see note)</span>
 curl -fsSL <span data-origin>https://gloirembonyi.github.io/polinrider-hunter</span>/install.sh | sh</code></pre>
             <button class="copy" type="button" aria-label="Copy command"></button>
           </div>
           <p class="pane__note">
-            No signed macOS binary is published yet, so the installer builds from source —
+            No signed macOS binary is published yet, so the installer builds from source -
             about a minute. It needs <code>cargo</code>; if that is missing it tells you
             exactly what to run rather than failing quietly:
             <code>curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh</code>.
@@ -151,12 +151,12 @@ curl -fsSL <span data-origin>https://gloirembonyi.github.io/polinrider-hunter</s
         <!-- Linux -->
         <div class="pane" role="tabpanel" id="pane-linux" aria-labelledby="tab-linux" hidden>
           <div class="code">
-            <pre><code><span class="c-cmt"># Terminal — needs a Rust toolchain (see note)</span>
+            <pre><code><span class="c-cmt"># Terminal - needs a Rust toolchain (see note)</span>
 curl -fsSL <span data-origin>https://gloirembonyi.github.io/polinrider-hunter</span>/install.sh | sh</code></pre>
             <button class="copy" type="button" aria-label="Copy command"></button>
           </div>
           <p class="pane__note">
-            Builds from source — about a minute, and it needs nothing from a package
+            Builds from source - about a minute, and it needs nothing from a package
             registry because the project has no dependencies. Requires <code>cargo</code>
             and <code>git</code>. Installs to <code>~/.local/bin</code>; the guard is
             registered as a <code>systemd --user</code> service.
@@ -167,7 +167,7 @@ curl -fsSL <span data-origin>https://gloirembonyi.github.io/polinrider-hunter</s
 
     <div class="note note--warn">
       <p>
-        <strong>Piping a script into a shell deserves scepticism</strong> — including this one.
+        <strong>Piping a script into a shell deserves scepticism</strong> - including this one.
         Read it first: <a href="install.ps1">install.ps1</a> ·
         <a href="install.sh">install.sh</a>. Both are short, and neither needs elevation.
         If you would rather not pipe anything, clone the repository and run
@@ -214,7 +214,7 @@ polinrider-hunter status</code></pre>
 
     <div class="grid grid--2">
       <div class="panel">
-        <span class="step__num">01 — HIDING</span>
+        <span class="step__num">01 - HIDING</span>
         <h3>It lives in a build config</h3>
         <p class="small">
           The payload is appended to <em>one line</em> of a file like
@@ -225,19 +225,19 @@ polinrider-hunter status</code></pre>
         </p>
         <p class="small">
           It runs on any <code>dev</code>, <code>build</code> or <code>lint</code> that
-          loads the config — and inside your editor too, because extensions like ESLint
+          loads the config - and inside your editor too, because extensions like ESLint
           and Tailwind IntelliSense execute the project config in their own Node process.
         </p>
       </div>
 
       <div class="panel">
-        <span class="step__num">02 — COMMAND &amp; CONTROL</span>
+        <span class="step__num">02 - COMMAND &amp; CONTROL</span>
         <h3>Its C2 lives on a blockchain</h3>
         <p class="small">
           Rather than a domain that can be taken down, stage 1 reads the most recent
           transaction from a hardcoded Ethereum sender through public RPC endpoints,
           then decodes two IPv4 addresses out of the transaction's <code>to</code>
-          field — bytes 0–3 and 4–7.
+          field - bytes 0–3 and 4–7.
         </p>
         <p class="small">
           The operator moves the C2 by sending a cheap transaction. Nothing to seize,
@@ -246,7 +246,7 @@ polinrider-hunter status</code></pre>
       </div>
 
       <div class="panel">
-        <span class="step__num">03 — DELIVERY</span>
+        <span class="step__num">03 - DELIVERY</span>
         <h3>Cleartext on port 443</h3>
         <p class="small">
           Stage 2 arrives over plain HTTP on port 443, which looks like TLS to anything
@@ -262,7 +262,7 @@ polinrider-hunter status</code></pre>
       </div>
 
       <div class="panel">
-        <span class="step__num">04 — PERSISTENCE</span>
+        <span class="step__num">04 - PERSISTENCE</span>
         <h3>It runs twice, once invisibly</h3>
         <p class="small">
           In-process via <code>eval</code>, and again as a detached child:
@@ -285,7 +285,7 @@ polinrider-hunter status</code></pre>
     <div class="note note--danger">
       <p>
         <strong>This is not hypothetical.</strong> A live stage 2 was found running on the
-        machine this tool was written on — parented by the code editor, C2 already
+        machine this tool was written on - parented by the code editor, C2 already
         resolved, hours after every repository had been cleaned. Removing a file stops
         the <em>next</em> build. It does nothing about the process already running.
       </p>
@@ -345,7 +345,7 @@ polinrider-hunter status</code></pre>
           <code>X-Payload-B64</code>, <code>global['!']</code>, <code>_$_1e42</code>,
           <code>AUTH_API_KEY</code>, campaign tags.
         </p>
-        <p class="small muted">Fast and precise — but only for variants already seen.</p>
+        <p class="small muted">Fast and precise - but only for variants already seen.</p>
       </div>
       <div class="panel">
         <span class="step__num">LAYER 2</span>
@@ -363,7 +363,7 @@ polinrider-hunter status</code></pre>
         <h3>Process</h3>
         <p class="small">
           Any running <code>node -e</code> whose command line carries the stage&#8209;2
-          globals — <code>global['_V']</code>, <code>global['_t_s']</code> and friends.
+          globals - <code>global['_V']</code>, <code>global['_t_s']</code> and friends.
         </p>
         <p class="small muted">
           Finds an infection whose file you already cleaned, or that arrived another way.
@@ -377,7 +377,7 @@ polinrider-hunter status</code></pre>
         <p class="small">
           <strong>Critical</strong> means unambiguous, and is safe to remove
           automatically. <strong>Suspicious</strong> means consistent with PolinRider but
-          plausible in honest code — Ethereum RPC hostnames, <code>windowsHide</code> —
+          plausible in honest code - Ethereum RPC hostnames, <code>windowsHide</code> -
           and is only ever reported.
         </p>
         <p class="small">
@@ -393,7 +393,7 @@ polinrider-hunter status</code></pre>
           project opts its own gate out explicitly and the exemption travels with the file.
         </p>
         <p class="small">
-          CI gates are also recognised by content — signatures sitting inside a
+          CI gates are also recognised by content - signatures sitting inside a
           <code>grep</code> pattern, next to the <code>grep</code> itself.
         </p>
       </div>
@@ -470,7 +470,7 @@ polinrider-hunter status</code></pre>
             <td><span class="tag tag--auto">removed</span></td>
           </tr>
           <tr>
-            <td><code>temp_auto_push.bat</code> — rewrites git history with a back-dated <code>--no-verify</code> force-push</td>
+            <td><code>temp_auto_push.bat</code> - rewrites git history with a back-dated <code>--no-verify</code> force-push</td>
             <td>filename (found in 101 victim repos, no false positives)</td>
             <td><span class="tag tag--auto">deleted</span></td>
           </tr>
@@ -495,7 +495,7 @@ polinrider-hunter status</code></pre>
             <td><span class="tag tag--auto">removed</span></td>
           </tr>
           <tr>
-            <td>Payload in any data file — <code>spellright.dict</code>, <code>.dat</code>, <code>.bin</code></td>
+            <td>Payload in any data file - <code>spellright.dict</code>, <code>.dat</code>, <code>.bin</code></td>
             <td>content is JavaScript <em>and</em> carries an indicator</td>
             <td><span class="tag tag--auto">deleted</span></td>
           </tr>
@@ -516,7 +516,7 @@ polinrider-hunter status</code></pre>
           </tr>
           <tr>
             <td><code>task.allowAutomaticTasks</code> arming that task</td>
-            <td>value-aware — <code>"off"</code> is never flagged</td>
+            <td>value-aware - <code>"off"</code> is never flagged</td>
             <td><span class="tag tag--manual">reported</span></td>
           </tr>
           <tr>
@@ -531,7 +531,7 @@ polinrider-hunter status</code></pre>
     <div class="note">
       <p>
         <strong>Where this list comes from.</strong> Partly from samples pulled off an
-        infected machine, and partly from the public dossier on the campaign — it is
+        infected machine, and partly from the public dossier on the campaign - it is
         attributed to a DPRK-linked actor and has put
         <a href="https://socket.dev/blog/polinrider-north-korea-linked-supply-chain-campaign-expands" rel="noopener">108 malicious packages</a>
         across npm, Packagist, Go and the Chrome Web Store, with
@@ -550,7 +550,7 @@ polinrider-hunter status</code></pre>
         <code>"command"</code> value, and cutting to end of line would leave a dangling
         <code>"command": "</code> and an unparseable file. For UTF-16, the match offsets
         belong to the decoded text, not to the file's bytes. Both cases name the problem
-        instead of guessing — and there are tests holding each line.
+        instead of guessing - and there are tests holding each line.
       </p>
     </div>
   </div>
@@ -574,7 +574,7 @@ polinrider-hunter status</code></pre>
       <div class="panel">
         <h3>Never rewrite bytes we did not mean to</h3>
         <p class="small">
-          Read the file to lines, edit, write the lines back — and you have silently
+          Read the file to lines, edit, write the lines back - and you have silently
           rewritten every line ending in it. On a CRLF repository that turns a one-line
           security fix into a whole-file diff and buries the actual change in noise.
         </p>
@@ -586,7 +586,7 @@ polinrider-hunter status</code></pre>
 
     <p>
       The cut starts at the <em>beginning of the whitespace pad</em>, so the camouflage
-      goes with the payload. Cutting repeats until the file is genuinely clean — a config
+      goes with the payload. Cutting repeats until the file is genuinely clean - a config
       visited twice carries one pad and payload per visit, and stopping after the first
       would leave the rest in place.
     </p>
@@ -595,7 +595,7 @@ polinrider-hunter status</code></pre>
       <p>
         <strong>Verified against the real thing.</strong> Healing the live payload out of an
         infected <code>postcss.config.mjs</code> produces a file byte-identical to a
-        hand-reviewed fix — and 96 bytes smaller, because the injected
+        hand-reviewed fix - and 96 bytes smaller, because the injected
         <code>createRequire</code> scaffolding goes too, leaving the genuinely pristine
         original.
       </p>
@@ -619,7 +619,7 @@ polinrider-hunter status</code></pre>
         <p class="small">
           <code>stat</code>s a precomputed list of concrete target paths and reads a file
           only when its mtime has actually moved. <strong>No directory walking at
-          all</strong> — an earlier version re-walked every repository twice a minute,
+          all</strong> - an earlier version re-walked every repository twice a minute,
           which is thousands of directory reads to discover nothing had changed.
         </p>
       </div>
@@ -638,7 +638,7 @@ polinrider-hunter status</code></pre>
         <p class="small">
           Fetches and audits every branch, local and remote-tracking, reporting anything
           that arrived upstream. <code>git grep</code> reads straight out of the object
-          database — no pull, no checkout, nothing written to your working tree.
+          database - no pull, no checkout, nothing written to your working tree.
         </p>
       </div>
     </div>
@@ -668,7 +668,7 @@ polinrider-hunter status</code></pre>
     <div class="note">
       <p>
         <strong>What it will not do.</strong> The guard heals working trees. It never
-        rewrites git history and it never pushes — an automated process that force-pushes
+        rewrites git history and it never pushes - an automated process that force-pushes
         to shared branches is a worse problem than the one it is solving. It reports what
         it finds on a branch and leaves the decision to you.
       </p>
@@ -679,7 +679,7 @@ polinrider-hunter status</code></pre>
       <table>
         <thead><tr><th style="width:130px">Platform</th><th>Mechanism</th></tr></thead>
         <tbody>
-          <tr><td>Windows</td><td><code>PolinRiderHunter.vbs</code> in the Startup folder — a one-line launcher, because a Startup shortcut to a console binary flashes a window</td></tr>
+          <tr><td>Windows</td><td><code>PolinRiderHunter.vbs</code> in the Startup folder - a one-line launcher, because a Startup shortcut to a console binary flashes a window</td></tr>
           <tr><td>macOS</td><td><code>~/Library/LaunchAgents/com.polinrider.hunter.plist</code></td></tr>
           <tr><td>Linux</td><td><code>~/.config/systemd/user/polinrider-hunter.service</code></td></tr>
         </tbody>
@@ -710,11 +710,11 @@ polinrider-hunter status</code></pre>
           A desktop notification when something is cleaned, and a louder one when
           something is found that will not be touched automatically. Tray balloon on
           Windows, <code>osascript</code> on macOS, <code>notify-send</code> on Linux
-          — all already on those systems, nothing to install.
+          - all already on those systems, nothing to install.
         </p>
         <p class="small muted">
           Check they reach you: <code>polinrider-hunter test-notify</code>. Silence is
-          deliberate on a headless box or locked session — the log still has everything.
+          deliberate on a headless box or locked session - the log still has everything.
         </p>
       </div>
 
@@ -743,7 +743,7 @@ polinrider-hunter status</code></pre>
           state directory, the <code>PATH</code> entry and the binary itself.
         </p>
         <p class="small muted">
-          <code>--purge</code> warns first if the quarantine is not empty — those are the
+          <code>--purge</code> warns first if the quarantine is not empty - those are the
           only copies of what was cut out of your files.
         </p>
       </div>
@@ -858,7 +858,7 @@ polinrider-hunter uninstall --purge</code></pre>
     <ul class="checks" style="margin-bottom:26px">
       <li>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>
-        <span><strong>72 automated tests</strong> — 56 unit, 16 end-to-end. The end-to-end suite plants each real attack shape on disk and asserts the payload is gone, the surrounding code is byte-for-byte unchanged, a second pass finds nothing, and the quarantined original still matches.</span>
+        <span><strong>72 automated tests</strong> - 56 unit, 16 end-to-end. The end-to-end suite plants each real attack shape on disk and asserts the payload is gone, the surrounding code is byte-for-byte unchanged, a second pass finds nothing, and the quarantined original still matches.</span>
       </li>
       <li>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>
@@ -866,22 +866,22 @@ polinrider-hunter uninstall --purge</code></pre>
       </li>
       <li>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>
-        <span><strong>A live guard test</strong> — a reinfected config with two payloads and mixed space/tab padding, planted in a watched repository. Caught all six indicators and healed both in one 30-second cycle.</span>
+        <span><strong>A live guard test</strong> - a reinfected config with two payloads and mixed space/tab padding, planted in a watched repository. Caught all six indicators and healed both in one 30-second cycle.</span>
       </li>
       <li>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>
-        <span><strong>Six planted infections across five project trees</strong> — all four config shapes, the dropped <code>.env</code>, and the payload wearing a <code>.woff2</code> extension. All removed in 542&nbsp;ms; three deliberately-clean bystanders untouched.</span>
+        <span><strong>Six planted infections across five project trees</strong> - all four config shapes, the dropped <code>.env</code>, and the payload wearing a <code>.woff2</code> extension. All removed in 542&nbsp;ms; three deliberately-clean bystanders untouched.</span>
       </li>
       <li>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>
-        <span><strong>The tests found defects in the tool itself</strong> — incomplete cleaning of reinfected files, JSON corruption in <code>tasks.json</code>, and an unbounded search that could swallow unrelated code. All fixed, all with tests.</span>
+        <span><strong>The tests found defects in the tool itself</strong> - incomplete cleaning of reinfected files, JSON corruption in <code>tasks.json</code>, and an unbounded search that could swallow unrelated code. All fixed, all with tests.</span>
       </li>
     </ul>
 
     <div class="note">
       <p>
-        Payloads in the test suite are <strong>inert</strong> — the recognisable shape of
-        PolinRider with a harmless body — so running the tests never puts working malware
+        Payloads in the test suite are <strong>inert</strong> - the recognisable shape of
+        PolinRider with a harmless body - so running the tests never puts working malware
         on disk.
       </p>
     </div>
@@ -897,7 +897,7 @@ polinrider-hunter uninstall --purge</code></pre>
     <dl class="faq">
       <dt>Does it work on Windows, macOS and Linux?</dt>
       <dd>
-        Yes — one codebase, Rust standard library only, no platform-specific
+        Yes - one codebase, Rust standard library only, no platform-specific
         dependencies. Windows currently gets a prebuilt binary; macOS and Linux build
         from source in about a minute, which needs a Rust toolchain. That is a packaging
         gap, not a portability one.
@@ -906,7 +906,7 @@ polinrider-hunter uninstall --purge</code></pre>
       <dt>Why no dependencies at all?</dt>
       <dd>
         Because the entire subject of this program is supply-chain compromise. Anything
-        it would have pulled a crate for — regex, file watching, JSON — is a small
+        it would have pulled a crate for - regex, file watching, JSON - is a small
         purpose-built module instead. It also means the build needs no network access,
         and there is nothing in it you cannot read.
       </dd>
@@ -945,13 +945,13 @@ polinrider-hunter uninstall --purge</code></pre>
         the newer spaced-<code>global.i</code> variant. Signature coverage is not the same
         as coverage. There is a related trap: a file antivirus has locked cannot be read,
         and a scanner that treats an unreadable file as a clean one hides the strongest
-        available signal — this one reports it as <code>read-blocked</code> instead.
+        available signal - this one reports it as <code>read-blocked</code> instead.
       </dd>
 
       <dt>How do I remove it?</dt>
       <dd>
         <code>polinrider-hunter uninstall</code> stops the guard and removes the hooks,
-        and prints exactly what it took out. That is reversible — the binary and your
+        and prints exactly what it took out. That is reversible - the binary and your
         state directory stay. <code>polinrider-hunter uninstall --purge</code> goes
         further: the state directory, the <code>PATH</code> entry and the binary itself.
         It warns first if the quarantine still holds originals, since deleting those is
@@ -960,7 +960,7 @@ polinrider-hunter uninstall --purge</code></pre>
 
       <dt>Will I know when it finds something?</dt>
       <dd>
-        Yes — a desktop notification, using whatever the platform already provides. Run
+        Yes - a desktop notification, using whatever the platform already provides. Run
         <code>polinrider-hunter test-notify</code> to confirm they reach you before you
         need them. If your desktop cannot show one (headless, locked session) it fails
         quietly rather than refusing to run, and the log still records every detection.
@@ -969,7 +969,7 @@ polinrider-hunter uninstall --purge</code></pre>
 
       <dt>Can I see what it is doing?</dt>
       <dd>
-        <code>polinrider-hunter monitor</code> gives a live dashboard — guard health,
+        <code>polinrider-hunter monitor</code> gives a live dashboard - guard health,
         every watched path, a timeline of detections with the indicators that fired, and
         the quarantine. Add <code>--web</code> and it prints a
         <code>http://127.0.0.1:8787</code> link to open in a browser. It is part of the
@@ -987,7 +987,7 @@ polinrider-hunter uninstall --purge</code></pre>
   <div class="wrap footer__inner">
     <div>
       <strong style="color:var(--text)">polinrider-hunter</strong> · v1.0.0 · MIT
-      <span class="muted"> — built because three scanners all reported <em>clean</em>.</span>
+      <span class="muted"> - built because three scanners all reported <em>clean</em>.</span>
     </div>
     <div style="display:flex;gap:18px">
       <a href="https://github.com/gloirembonyi/polinrider-hunter" rel="noopener">Source</a>

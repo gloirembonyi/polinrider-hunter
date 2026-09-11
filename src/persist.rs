@@ -5,8 +5,8 @@
 //! Cleaning a repository removes the loader's *delivery*. It says nothing about
 //! whether the second stage arranged to come back on its own. The published
 //! cleanup guidance for this campaign lists a set of places worth checking by
-//! hand — shell startup files, cron, macOS launch agents, the PowerShell
-//! profile — and "by hand" scales badly, so it is checked here instead.
+//! hand - shell startup files, cron, macOS launch agents, the PowerShell
+//! profile - and "by hand" scales badly, so it is checked here instead.
 //!
 //! This module only ever *reports*. Rewriting somebody's `.zshrc` or removing a
 //! cron entry unasked is a good way to break a machine in a way that is hard to
@@ -88,7 +88,7 @@ pub fn check() -> Vec<Hit> {
     let mut out = Vec::new();
     let Some(h) = home() else { return out };
 
-    // Shell startup files, on every platform — Git Bash and WSL make these
+    // Shell startup files, on every platform - Git Bash and WSL make these
     // relevant on Windows too.
     for name in [
         ".bashrc", ".bash_profile", ".bash_login", ".profile",

@@ -1,4 +1,4 @@
-# tools/ — the Python side
+# tools/ - the Python side
 
 <!-- POLINRIDER-HUNTER-DETECTOR: this file names malware indicators. Not malware. -->
 
@@ -6,8 +6,8 @@ The Rust binary is the engine: it detects, removes, and guards, with no runtime
 to install. Every protective function works without ever running anything here.
 
 **Start with `polinrider-hunter monitor`.** The dashboard is now part of the
-binary — terminal view, `--web` for a browser view on localhost, `--once`,
-`--json` — so it works on any machine that ran the install command, from any
+binary - terminal view, `--web` for a browser view on localhost, `--once`,
+`--json` - so it works on any machine that ran the install command, from any
 directory, with nothing cloned and no Python. That is what almost everybody
 wants, and this directory is not it.
 
@@ -21,7 +21,7 @@ to look at its own logs.
 
 ---
 
-## `monitor.py` — see what is going on
+## `monitor.py` - see what is going on
 
 ```sh
 python monitor.py            # live terminal dashboard, refreshes every 3s
@@ -76,7 +76,7 @@ polinrider-hunter test-notify   # check they actually reach you on this machine
 ```
 
 Under the hood it is a tray balloon on Windows, `osascript` on macOS,
-`notify-send` on Linux — all already present on those systems. Failure is silent
+`notify-send` on Linux - all already present on those systems. Failure is silent
 by design: on a headless box or a locked session there is nowhere to show a
 notification, and a scanner that refused to run because it could not raise a
 toast would be worse than one that stays quiet. The log records every detection
@@ -93,7 +93,7 @@ polinrider-hunter uninstall           # stop the guard, remove the hooks
 polinrider-hunter uninstall --purge   # ...and the state, PATH entry and binary
 ```
 
-Plain `uninstall` is reversible — it stops the guard and removes the pre-commit
+Plain `uninstall` is reversible - it stops the guard and removes the pre-commit
 hooks, and leaves the binary and your state directory alone. It prints what it
 removed and what was already absent, so you are never guessing.
 

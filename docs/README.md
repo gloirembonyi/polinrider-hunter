@@ -1,4 +1,4 @@
-# docs/ — the polinrider-hunter page
+# docs/ - the polinrider-hunter page
 
 <!-- POLINRIDER-HUNTER-DETECTOR: this file documents malware signatures. Not malware. -->
 
@@ -7,7 +7,7 @@ no `node_modules`.
 
 That is a deliberate choice rather than a shortcut. This page exists to convince
 someone it is safe to pipe a script into their shell, so the whole thing should
-be readable in one sitting — and a page about supply-chain malware that pulls
+be readable in one sitting - and a page about supply-chain malware that pulls
 four hundred megabytes of transitive dependencies to render some text would be
 making the wrong argument. It also loads instantly and deploys anywhere.
 
@@ -41,8 +41,8 @@ root, and both of these caught the first version out:
 
 Nothing is GitHub-specific. Point any static host at `docs/` and the page works;
 the displayed install command follows automatically because it is computed, not
-hardcoded. Only the two scripts carry a default URL — the `$Site` line in
-`install.ps1` and the `SITE=` line in `install.sh` — because a script piped into
+hardcoded. Only the two scripts carry a default URL - the `$Site` line in
+`install.ps1` and the `SITE=` line in `install.sh` - because a script piped into
 a shell cannot know where it came from. Both honour `POLINRIDER_SITE`:
 
 ```sh
@@ -66,7 +66,7 @@ full sweep.
 ## Serving the binary
 
 `bin/polinrider-hunter-windows-x86_64.exe` (397 KB) is committed, so
-`irm https://your-domain/install.ps1 | iex` works the moment the site is live —
+`irm https://your-domain/install.ps1 | iex` works the moment the site is live -
 **no GitHub repository or release is required**. The installer downloads that
 file and checks it really is an executable before trusting it, because a static
 host answers `200` with an HTML error page for a missing path, and piping that
@@ -93,7 +93,7 @@ cp target/release/polinrider-hunter site/bin/polinrider-hunter-linux-x86_64
 ```
 
 Until then `install.sh` builds from source, which takes about a minute and needs
-`cargo` — it says so plainly rather than failing. The source-build and release fallbacks default to
+`cargo` - it says so plainly rather than failing. The source-build and release fallbacks default to
 [`gloirembonyi/polinrider-hunter`](https://github.com/gloirembonyi/polinrider-hunter); override with `POLINRIDER_REPO`.
 
 ### Keeping the binary in step with the code

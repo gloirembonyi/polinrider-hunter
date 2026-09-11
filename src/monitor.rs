@@ -4,7 +4,7 @@
 //!
 //! This lives in the binary rather than in a script beside it, because the
 //! person who most needs it is the one who ran a one-line installer and has no
-//! copy of this repository — `python tools/monitor.py` is useless to them. Both
+//! copy of this repository - `python tools/monitor.py` is useless to them. Both
 //! views read the same state the guard writes: nothing here is fabricated, and
 //! nothing here writes.
 //!

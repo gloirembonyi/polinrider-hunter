@@ -5,7 +5,7 @@
 Finds and removes the **PolinRider** supply-chain malware from developer machines
 and git repositories, then keeps watching so it cannot come back quietly.
 
-One binary. No runtime to install, no dependencies to audit — the whole thing is
+One binary. No runtime to install, no dependencies to audit - the whole thing is
 Rust standard library, on purpose.
 
 ## Install
@@ -32,7 +32,7 @@ it once.
 
 Each prefers the prebuilt binary published next to the script, falls back to a
 GitHub release when `POLINRIDER_REPO` is set, and finally to building from source
-with `cargo` — and when none of those is possible it says which, rather than
+with `cargo` - and when none of those is possible it says which, rather than
 failing quietly. It also verifies that what it downloaded is genuinely an
 executable, because a static host answers `200` with an HTML error page for a
 missing path and piping that into place would be worse than failing.
@@ -73,14 +73,14 @@ Worth understanding, because it explains every design decision below.
 file like `postcss.config.mjs`, `tailwind.config.js`, `eslint.config.mjs`,
 `vite.config.ts` or `nest-cli.json`, behind roughly 500 characters of spaces or
 tabs. In an editor the code sits far off the right edge; in a diff the line looks
-untouched. It runs on any `dev`, `build` or `lint` that loads the config — and
+untouched. It runs on any `dev`, `build` or `lint` that loads the config - and
 also inside your editor, since extensions like ESLint and Tailwind IntelliSense
 execute the project config in their own Node process.
 
 **2. It resolves its C2 from the Ethereum blockchain.** Rather than a domain that
 can be taken down, stage 1 reads the most recent transaction from a hardcoded
 sender address using public RPC endpoints, and decodes two IPv4 addresses out of
-the transaction's `to` field — bytes 0-3 and 4-7. The operator moves the C2 by
+the transaction's `to` field - bytes 0-3 and 4-7. The operator moves the C2 by
 sending a cheap transaction. Nothing to seize, nothing to blocklist. This
 technique is generally called *EtherHiding*.
 
@@ -90,7 +90,7 @@ Chrome `User-Agent` and carries the campaign id in a `Sec-V` header; the respons
 can deliver the payload in an `X-Payload-B64` header so a `HEAD` request leaves
 no body to inspect. It is XOR-encrypted with a key baked into stage 1.
 
-**4. It runs stage 2 twice — once visibly, once not.** In-process via `eval`, and
+**4. It runs stage 2 twice - once visibly, once not.** In-process via `eval`, and
 again as:
 
 ```js
@@ -103,7 +103,7 @@ so stage 2 has the full run of Node.
 
 **Other shapes seen:** a NestJS `src/main.ts` with an injected
 `import 'dotenv/config'` plus an IIFE that `atob`-decodes `AUTH_API_KEY` into a
-URL, fetches code and `eval`s it — fed by a dropped `.env` containing only that
+URL, fetches code and `eval`s it - fed by a dropped `.env` containing only that
 key; and a `.vscode/tasks.json` that auto-runs a payload disguised as a webfont
 on `folderOpen`, armed by `task.allowAutomaticTasks`.
 
@@ -113,8 +113,8 @@ on `folderOpen`, armed by `task.allowAutomaticTasks`.
 
 The scanners already guarding these repos matched `global\.i=`. The live variant
 writes `global.i = '...'` **with spaces**, and pads with tabs instead of spaces.
-That one character of whitespace walked it past every gate — local pre-commit
-hook, CI job, and Docker build check — for months, while each of them reported
+That one character of whitespace walked it past every gate - local pre-commit
+hook, CI job, and Docker build check - for months, while each of them reported
 "clean".
 
 So this tool does not rely on a string list alone.
@@ -128,16 +128,16 @@ Three layers, deliberately independent:
 | Layer | Catches | Weakness it covers |
 |---|---|---|
 | **Signatures** | Known strings: the sender address, `/0x/cls`, `X-Payload-B64`, `global['!']`, `_$_1e42`, `AUTH_API_KEY`, campaign tags | Fast and precise, but only for variants we have seen |
-| **Structure** | A run of ≥200 spaces/tabs followed by code | Variant-agnostic. A new build can change every string it contains, but not this — the padding *is* the camouflage, and dropping it means showing up in the editor |
+| **Structure** | A run of ≥200 spaces/tabs followed by code | Variant-agnostic. A new build can change every string it contains, but not this - the padding *is* the camouflage, and dropping it means showing up in the editor |
 | **Process** | Running `node -e` whose command line carries the stage-2 globals (`global['_V']`, `global['_t_s']`, …) | Finds an infection whose file you already cleaned, or that arrived by another route entirely |
 
 The process layer is not theoretical: it is what found a live stage 2 on the
-machine this tool was written on — parented by the editor, C2 already resolved,
+machine this tool was written on - parented by the editor, C2 already resolved,
 long after the repositories themselves were clean.
 
 **Severity matters.** `Critical` means unambiguous, and is safe to remove
 automatically. `Suspicious` means consistent with PolinRider but plausible in
-honest code — Ethereum RPC hostnames, `windowsHide` — and is only ever reported.
+honest code - Ethereum RPC hostnames, `windowsHide` - and is only ever reported.
 Padding alone is treated as critical *but only inside a file PolinRider is known
 to target*; elsewhere it asks a human to look.
 
@@ -150,7 +150,7 @@ POLINRIDER-HUNTER-DETECTOR
 ```
 
 is skipped wherever it lives. That is better than us maintaining a list of
-everyone's filenames — a project opts its own gate out explicitly, and the
+everyone's filenames - a project opts its own gate out explicitly, and the
 exemption travels with the file. A short list of well-known gate filenames
 (`check-malware.mjs`, `security-malware-scan.yml`, …) is skipped too.
 
@@ -164,8 +164,8 @@ Two rules:
 `<home>/quarantine/` and indexed in `index.jsonl` before anything is modified. A
 wrong cut is always recoverable. `polinrider-hunter quarantine` lists them.
 
-**Never rewrite bytes we did not mean to change.** The obvious implementation —
-read to lines, edit, write lines back — silently rewrites every line ending in
+**Never rewrite bytes we did not mean to change.** The obvious implementation -
+read to lines, edit, write lines back - silently rewrites every line ending in
 the file. On a CRLF repository that turns a one-line security fix into a
 whole-file diff, and buries the actual change in noise. So the healer splices the
 byte buffer and leaves every other byte untouched. This is verified against real
@@ -174,8 +174,8 @@ produces a file **byte-identical** to the hand-reviewed fix.
 
 The cut point is the *start of the whitespace pad*, so the camouflage goes with
 the payload. For the `src/main.ts` shape it excises the `(async () => { … })();`
-block and the injected `dotenv/config` import. A `.env` is deleted outright —
-and untracked from git — but only when `AUTH_API_KEY` is essentially all it
+block and the injected `dotenv/config` import. A `.env` is deleted outright -
+and untracked from git - but only when `AUTH_API_KEY` is essentially all it
 contains; a real `.env` that merely picked up the key is never destroyed.
 
 ---
@@ -189,18 +189,18 @@ contains; a real `.env` that merely picked up the key is never destroyed.
 | Injected `createRequire` shim that manufactures `require()` for an ESM config | correlated with the payload | removed with the payload, but only when nothing else uses `require` |
 | `global.i = '...'` written **with spaces**, tab padding | `global\.i\s*=`, and the padding heuristic regardless of spelling | as above |
 | Obfuscated variant: `global['!']`, `_$_1e42` shuffle decoder, modulus `4573868` | signatures | as above |
-| Ethereum dead-drop C2 (`0xa322…`, public RPC hosts, `eth_getBlockByNumber`) | signatures; RPC hosts are corroborating-only | n/a — evidence, not a payload |
+| Ethereum dead-drop C2 (`0xa322…`, public RPC hosts, `eth_getBlockByNumber`) | signatures; RPC hosts are corroborating-only | n/a - evidence, not a payload |
 | Stage-2 fetch over plain HTTP on port 443, `X-Payload-B64`, `/0x/cls`, `/0x/ls` | signatures | as above |
 | NestJS `src/main.ts` dropper: injected `import 'dotenv/config'` + `(async () => { atob(AUTH_API_KEY) … eval })();` | signatures | the IIFE block and the injected import are excised; the bootstrap either side is untouched |
-| Dropped `.env` carrying only `AUTH_API_KEY` | signatures | file deleted and untracked from git — but only if the key is essentially all it holds |
+| Dropped `.env` carrying only `AUTH_API_KEY` | signatures | file deleted and untracked from git - but only if the key is essentially all it holds |
 | Payload disguised as a webfont (`public/fonts/*.woff2` that is really JavaScript) | font magic bytes vs. extension | file deleted |
-| `.vscode/tasks.json` auto-running the payload on `folderOpen` | signatures (`node ./public/fonts`) | **reported, never auto-edited** — splicing JSON would corrupt it, so it names the entry for you to delete |
+| `.vscode/tasks.json` auto-running the payload on `folderOpen` | signatures (`node ./public/fonts`) | **reported, never auto-edited** - splicing JSON would corrupt it, so it names the entry for you to delete |
 | `task.allowAutomaticTasks` arming that task | value-aware check | reported; `"off"` is the hardened setting and is never flagged |
 | Config re-saved as **UTF-16** to slip past NUL-based "binary" checks | BOM detected and the text decoded | reported; automatic removal disabled, because the offsets belong to the decoded text |
 | Hidden, detached stage 2 (`node -e` with `windowsHide`, `detached`, `.unref()`) | its command line carries the stage-2 globals | process terminated |
 
 Anything the tool will not clean automatically is reported with the reason,
-rather than guessed at. Two of those decisions — JSON and UTF-16 — exist because
+rather than guessed at. Two of those decisions - JSON and UTF-16 - exist because
 a byte-level cut is the right tool for an appended payload and the wrong tool for
 structured or wide-character text. There are tests holding both lines.
 
@@ -215,20 +215,20 @@ Measured on the machine it was built on, guarding seven repositories:
 | Quick pass (every 30s) | **0.020s CPU**, no directory walking at all |
 | Full pass (every 15m) | ~1.3s CPU |
 | Resident memory | **4.7 MB** |
-| Priority | **BelowNormal** — it yields to whatever you are doing |
+| Priority | **BelowNormal** - it yields to whatever you are doing |
 
 Three things get it there:
 
 - **The quick pass never walks.** It `stat`s a precomputed list of concrete
   target paths and reads a file only when its mtime has actually moved. An
-  earlier version re-walked every repository twice a minute — thousands of
+  earlier version re-walked every repository twice a minute - thousands of
   directory reads to discover nothing had changed.
 - **One indexed pass, not twenty-five.** Each indicator is bucketed by the byte
   it can start on, so at any position only the one or two that could match are
   tested. It used to run a separate full search per indicator.
 - **Exemption checks come last.** Deciding "is this file a scanner rather than
   malware?" costs ten full searches, so it now runs only when there is a hit to
-  suppress. Clean files — almost all of them — cost exactly one pass.
+  suppress. Clean files - almost all of them - cost exactly one pass.
 
 Together those took a sweep of a JavaScript-heavy tree (1,768 candidate files)
 from **66.8s to 1.6s**, a 40x improvement, with identical results.
@@ -279,7 +279,7 @@ in an order that matters:
 
 `--dry-run` shows what it would do and writes nothing.
 
-**How long it takes.** A first full hunt is minutes, not seconds — it is reading
+**How long it takes.** A first full hunt is minutes, not seconds - it is reading
 every candidate file under your home directory. It prints each directory as it
 enters it, so you can see where it is. Two things keep it bounded:
 
@@ -295,7 +295,7 @@ enters it, so you can see where it is. Two things keep it bounded:
   multi-megabyte bundle would be missed. Target filenames are exempt and always
   read in full.
 
-Once the guard is installed you do not pay this cost again — its quick pass reads
+Once the guard is installed you do not pay this cost again - its quick pass reads
 only the ~30 filenames PolinRider targets, and only when one of them changes.
 
 Exit codes: `0` clean, `1` something found, `2` bad usage.
@@ -307,7 +307,7 @@ polinrider-hunter repos ~/work/some-repo
 ```
 
 `git grep` searches any ref straight out of the object database, so this fetches
-and then reads `refs/remotes/*` — no pull, no merge, nothing written to your
+and then reads `refs/remotes/*` - no pull, no merge, nothing written to your
 working tree. When what you are looking for is malware, you want to know what is
 on a branch *before* it lands on disk in a form something might execute.
 
@@ -320,12 +320,12 @@ and scanners on those branches do not show up as infections.
 
 Three cadences, because the cheap check is the one worth running often:
 
-- **quick** (30s) — reads only the ~30 filenames PolinRider targets, and only
+- **quick** (30s) - reads only the ~30 filenames PolinRider targets, and only
   when their mtime moved. Catches a fresh infection within half a minute at
   essentially no cost.
-- **full** (15m) — walks the watched trees properly, in case a variant picks a
+- **full** (15m) - walks the watched trees properly, in case a variant picks a
   filename we have not seen.
-- **git** (1h) — fetches and audits every ref, reporting anything upstream.
+- **git** (1h) - fetches and audits every ref, reporting anything upstream.
 
 It also checks for hidden stage-2 processes on every quick pass.
 
@@ -366,8 +366,8 @@ with `path` repeating once per directory.
 
 <https://gloirembonyi.github.io/polinrider-hunter>
 
-[`docs/`](docs/) is a static page — `index.html`, `styles.css`, `app.js`, no
-build step — that explains all of this to someone who has just been told their
+[`docs/`](docs/) is a static page - `index.html`, `styles.css`, `app.js`, no
+build step - that explains all of this to someone who has just been told their
 machine might be infected. It carries the installers and the Windows binary, so
 publishing it is what makes the one-liner work.
 
@@ -395,7 +395,7 @@ secrets, a genuine webfont, a markdown table, a CI gate.
 Payloads in the suite are inert - the recognisable shape of PolinRider with a
 harmless body - so running the tests never puts working malware on disk.
 
-Requires only a Rust toolchain. No network access needed at build time — there is
+Requires only a Rust toolchain. No network access needed at build time - there is
 nothing to download, which is a deliberate property for a tool whose entire
 purpose is supply-chain compromise.
 

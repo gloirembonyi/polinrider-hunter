@@ -1,4 +1,4 @@
-//! polinrider-hunter — detect and remove the PolinRider supply-chain malware.
+//! polinrider-hunter - detect and remove the PolinRider supply-chain malware.
 //!
 //! One binary, no runtime, no dependencies. `install` is the only command most
 //! people need; everything else exists so you can see what it is doing and
@@ -517,7 +517,7 @@ fn cmd_monitor(args: &Args, cfg: &Config) -> i32 {
 /// Show what the guard has been doing.
 ///
 /// The commonest question about any background process is "is it actually doing
-/// anything?", and answering it should not mean hunting for a log file — or
+/// anything?", and answering it should not mean hunting for a log file - or
 /// installing Python for the richer dashboard.
 fn cmd_log(args: &Args) -> i32 {
     let path = config::log_path();
