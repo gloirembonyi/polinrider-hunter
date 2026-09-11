@@ -18,3 +18,4 @@ pub mod scanner;
 pub mod service;
 pub mod signatures;
 pub mod util;
+pub mod winpersist;

@@ -152,6 +152,15 @@ fn is_merely_in_use(e: &std::io::Error) -> bool {
 /// its contents. `spellright.dict` is another binary-looking payload carrier.
 const ARTIFACT_NAMES: &[&str] = &["temp_auto_push.bat", "config.bat", "spellright.dict"];
 
+/// Fixed filenames the AppData loader campaign drops. Each is a shim or stage
+/// that is nothing but malware, so - like the propagation artefacts above - the
+/// name alone is the finding, and the whole file is removed. `NativeImageGen`
+/// has no extension (it rides a renamed pythonw), so name-matching is the only
+/// way it is ever read at all. The random per-victim loader (`tg14xq.js` on the
+/// machine this was found on) is caught by its contents, not this list.
+const LOADER_ARTIFACT_NAMES: &[&str] =
+    &["clr_init.vbs", "clr_task.xml", "VSCodeUpdater.vbs", "NativeImageGen"];
+
 /// Data files that should never contain executable code.
 const DISGUISE_EXTS: &[&str] = &["woff2", "woff", "ttf", "otf", "eot", "dict", "dat", "bin"];
 
@@ -231,7 +240,10 @@ pub const CONFIG_TARGETS: &[&str] = &[
 const SCAN_EXTS: &[&str] = &[
     "js", "mjs", "cjs", "jsx", "ts", "tsx", "mts", "cts", "json", "jsonc", "yml", "yaml", "toml",
     "sh", "bash", "ps1", "psm1", "bat", "cmd", "vbs", "py", "rb", "php", "vue", "svelte", "env",
-    "config", "lock", "md",
+    // `xml` is here for the loader campaign's scheduled-task definition
+    // (`clr_task.xml`), which launches a .vbs shim; without it the task file is
+    // never read.
+    "config", "lock", "md", "xml",
 ];
 
 /// Font extensions. PolinRider's autorun variant drops its payload as
@@ -242,6 +254,14 @@ pub fn is_artifact(path: &Path) -> bool {
     path.file_name()
         .and_then(|s| s.to_str())
         .map(|n| ARTIFACT_NAMES.iter().any(|a| a.eq_ignore_ascii_case(n)))
+        .unwrap_or(false)
+}
+
+/// Is this one of the AppData loader campaign's fixed-name shims/stages?
+pub fn is_loader_artifact(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(|n| LOADER_ARTIFACT_NAMES.iter().any(|a| a.eq_ignore_ascii_case(n)))
         .unwrap_or(false)
 }
 
@@ -404,7 +424,7 @@ fn has_scannable_ext(path: &Path) -> bool {
             return true;
         }
     }
-    if is_artifact(path) {
+    if is_artifact(path) || is_loader_artifact(path) {
         return true;
     }
     path.extension()
@@ -567,6 +587,22 @@ pub fn scan_file(path: &Path) -> Option<Finding> {
             note: Some(
                 "rewrites commit history with a back-dated --no-verify force-push".into(),
             ),
+        });
+    }
+    // The AppData loader campaign's fixed-name shims and stages: the name is
+    // the finding, and the whole file is payload.
+    if is_loader_artifact(path) {
+        return Some(Finding {
+            path: path.to_path_buf(),
+            hits: vec![Hit {
+                ioc: "loader-artifact",
+                sev: Severity::Critical,
+                why: "a known AppData loader shim/stage - its presence is the finding",
+                start: 0,
+                end: 0,
+                line: 0,
+            }],
+            note: Some("dropped loader/persistence shim; the whole file is malware".into()),
         });
     }
     let meta = std::fs::symlink_metadata(path).ok()?;
@@ -758,6 +794,75 @@ pub fn scan_tree_cb(root: &Path, quick: bool, on_finding: &mut dyn FnMut(Finding
                     if let Some(f) = scan_file(&path) {
                         on_finding(f);
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Scan the AppData hideouts the normal machine walk skips.
+///
+/// A full sweep skips `Microsoft`, `Packages` and the other vendor caches under
+/// %LOCALAPPDATA% for speed - which is exactly where the loader campaign hides
+/// its bundled-Python stage, in a fake `Microsoft\CLR_v4.0\Optimization` (the
+/// real .NET NGEN never lives under a user profile). These few known-bad
+/// locations are small and are scanned explicitly, skip list or not, so `hunt`
+/// reaches the stage the ordinary walk steps over.
+pub fn scan_hideouts_cb(on_finding: &mut dyn FnMut(Finding)) {
+    let Some(local) = local_appdata() else { return };
+    let spots = [
+        local.join("Microsoft").join("CLR_v4.0"),
+        local
+            .join("Microsoft")
+            .join("Windows")
+            .join("Caches")
+            .join("cversions"),
+    ];
+    for spot in spots {
+        walk_unrestricted(&spot, on_finding);
+    }
+}
+
+/// %LOCALAPPDATA%, or the conventional path under the user profile.
+fn local_appdata() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("LOCALAPPDATA") {
+        if !p.is_empty() {
+            return Some(PathBuf::from(p));
+        }
+    }
+    let base = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()?;
+    Some(PathBuf::from(base).join("AppData").join("Local"))
+}
+
+/// Walk `dir` in full, ignoring the skip list. Only ever pointed at a small,
+/// specific known-bad location by `scan_hideouts_cb`, never at a broad tree.
+fn walk_unrestricted(dir: &Path, on_finding: &mut dyn FnMut(Finding)) {
+    if !dir.exists() || is_own_state(dir) || is_quarantine(dir) {
+        return;
+    }
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                if std::fs::symlink_metadata(&path)
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                if !is_own_state(&path) && !is_quarantine(&path) {
+                    stack.push(path);
+                }
+            } else if meta.is_file() {
+                if let Some(f) = scan_file(&path) {
+                    on_finding(f);
                 }
             }
         }

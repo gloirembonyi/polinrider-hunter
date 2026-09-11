@@ -180,14 +180,23 @@ pub fn heal(finding: &Finding, dry_run: bool) -> Outcome {
         Err(e) => return Outcome::Failed(format!("read: {e}")),
     };
 
-    // A "font" that is really JavaScript, or a propagation script, is entirely
-    // payload - there is nothing in it to preserve, so the file goes rather
-    // than being edited.
-    if finding
-        .hits
-        .iter()
-        .any(|h| h.ioc == "font-disguise" || h.ioc == "propagation-artifact")
-    {
+    // A "font" that is really JavaScript, a propagation script, or a dropped
+    // loader from the AppData campaign is entirely payload - there is nothing in
+    // it to preserve, so the file goes rather than being edited.
+    //
+    // The whole-file campaign markers are each specific to a malware-only file
+    // (see signatures::WHOLE_FILE_PAYLOAD). The obfuscated Node loader is the
+    // one case that needs two hits together: generic obfuscation
+    // (`hex-string-array`) can appear in a minified library, so it deletes a
+    // whole file only alongside `node-loader-refresh`, which cannot.
+    let whole_file_payload = finding.hits.iter().any(|h| {
+        h.ioc == "font-disguise"
+            || h.ioc == "propagation-artifact"
+            || h.ioc == "loader-artifact"
+            || signatures::WHOLE_FILE_PAYLOAD.contains(&h.ioc)
+    }) || (finding.hits.iter().any(|h| h.ioc == "hex-string-array")
+        && finding.hits.iter().any(|h| h.ioc == "node-loader-refresh"));
+    if whole_file_payload {
         if dry_run {
             return Outcome::Skipped("would delete disguised payload file (dry run)".into());
         }

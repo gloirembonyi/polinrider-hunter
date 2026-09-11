@@ -414,6 +414,52 @@ pub static IOCS: &[Ioc] = &[
         why: "task.allowAutomaticTasks is enabled, which arms a folderOpen task",
         kind: Kind::AutoTasksEnabled,
     },
+    // ---- the AppData loader campaign (September 2026) ------------------------------
+    //
+    // A second campaign seen alongside PolinRider on the same machine. It does
+    // not append to project configs; it drops standalone loaders into
+    // %LOCALAPPDATA% and hides a bundled-Python stage under a directory named to
+    // look like the .NET runtime (`Microsoft\CLR_v4.0\Optimization`, where the
+    // "ngen.exe" is a renamed pythonw). Persistence is a Run value posing as
+    // "MicrosoftCLROptimization" and a scheduled task posing as "VSCodeUpdater",
+    // each launching a .vbs shim. These indicators identify the dropped files;
+    // the whole file is the payload, so the healer deletes rather than splices.
+    Ioc {
+        id: "campaign-opsec-marker",
+        sev: Severity::Critical,
+        why: "the loader's own tell: a stripped docstring reading 'REMOVED FOR OPSEC'",
+        kind: Kind::Lit("REMOVED FOR OPSEC"),
+    },
+    Ioc {
+        id: "fake-ngen-path",
+        sev: Severity::Critical,
+        why: "a fake .NET NGEN path under LOCALAPPDATA; the real ngen.exe never lives here",
+        kind: Kind::Lit("CLR_v4.0\\Optimization\\ngen.exe"),
+    },
+    Ioc {
+        id: "clr-relaunch-vbs",
+        sev: Severity::Critical,
+        why: "reference to clr_init.vbs, the shim that relaunches the hidden Python stage",
+        kind: Kind::Lit("clr_init.vbs"),
+    },
+    Ioc {
+        id: "c2-nodeloader-ip",
+        sev: Severity::Critical,
+        why: "hardcoded C2 of the AppData Node loader (194.11.226.41)",
+        kind: Kind::Lit("194.11.226.41"),
+    },
+    Ioc {
+        id: "c2-polinrider-ip",
+        sev: Severity::Critical,
+        why: "hardcoded C2 dead-drop host of the PolinRider stage 2 (193.247.144.38)",
+        kind: Kind::Lit("193.247.144.38"),
+    },
+    Ioc {
+        id: "node-loader-refresh",
+        sev: Severity::Suspicious,
+        why: "refreshPersistence(): the AppData Node loader re-arming its own persistence",
+        kind: Kind::Lit("refreshPersistence"),
+    },
 ];
 
 /// An extended-regex approximation of the critical set, for `git grep`.
@@ -437,6 +483,11 @@ pub const GIT_GREP_ERE: &str = concat!(
     "|atob\\(process\\.env\\.",
     "|auth-confirm-eight",
     "|node \\./public/fonts",
+    "|REMOVED FOR OPSEC",
+    "|CLR_v4\\.0..Optimization..ngen\\.exe",
+    "|clr_init\\.vbs",
+    "|194\\.11\\.226\\.41",
+    "|193\\.247\\.144\\.38",
     "|( {200,}|\t{200,})[^[:space:]]",
 );
 
@@ -467,6 +518,26 @@ pub const CORROBORATING: &[&str] = &[
     "rpc-aptos",
     "rpc-bsc",
     "rpc-bsc-2",
+    // On its own, "refreshPersistence" is a name an honest program could use.
+    // It earns its keep only beside the obfuscation the loader ships with.
+    "node-loader-refresh",
+];
+
+/// Whole-file-payload indicators for the AppData loader campaign.
+///
+/// Unlike the PolinRider indicators, which mark a payload appended to an
+/// otherwise-real config, every one of these appears only in a file that is
+/// nothing but malware - a dropped loader, a .vbs shim, the bundled-Python
+/// stage. There is no honest code to preserve, so the healer removes the whole
+/// file rather than splicing. Each is specific enough that a single hit is
+/// enough; none is a generic obfuscation marker (those can appear in minified
+/// libraries, and must never delete a file on their own).
+pub const WHOLE_FILE_PAYLOAD: &[&str] = &[
+    "campaign-opsec-marker",
+    "fake-ngen-path",
+    "clr-relaunch-vbs",
+    "c2-nodeloader-ip",
+    "c2-polinrider-ip",
 ];
 
 #[derive(Debug, Clone)]

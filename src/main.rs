@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use polinrider_hunter::{
     config, daemon, gitscan, healer, monitor, notify, persist, procscan, report, scanner,
-    service, util,
+    service, util, winpersist,
 };
 
 use config::Config;
@@ -196,6 +196,21 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
         }
     }
 
+    // 2b. Windows persistence we can act on: a Run value or Scheduled Task whose
+    //     launcher is provably one of the loader campaign's shims. Removed here
+    //     so the machine does not simply re-drop the payload at the next login.
+    let mut persist_removed = 0usize;
+    for a in winpersist::sweep(dry) {
+        if a.removed {
+            persist_removed += 1;
+        }
+        if !json {
+            let verb = if dry { "would remove" } else if a.removed { "removed  " } else { "FAILED   " };
+            println!("  {} {} {}", util::c(GREEN, verb), a.kind, a.name);
+            println!("      {}", util::c(DIM, &a.target));
+        }
+    }
+
     // 3. Every file under every root, healing each hit as it turns up rather
     //    than at the end: a machine-wide walk takes minutes, and an interrupted
     //    run should still have cleaned whatever it already reached.
@@ -271,11 +286,18 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
         }
         scanner::scan_tree_cb(root, true, &mut handle);
     }
+
+    // 4. The AppData hideouts the walk above deliberately skips (the fake
+    //    Microsoft\CLR_v4.0 stage). Small and specific, scanned last.
+    if !json {
+        println!("{}", util::c(DIM, "    scanning known AppData hideouts"));
+    }
+    scanner::scan_hideouts_cb(&mut handle);
     drop(handle);
 
     if json {
         println!(
-            "{{\"healed\":{healed},\"found\":{found},\"needs_review\":{noted},\"manual\":{}}}",
+            "{{\"healed\":{healed},\"found\":{found},\"needs_review\":{noted},\"persistence_removed\":{persist_removed},\"manual\":{}}}",
             manual.len()
         );
         return if manual.is_empty() { 0 } else { 1 };
@@ -283,9 +305,10 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
 
     println!();
     println!(
-        "{} {} loader process(es) stopped, {} of {} finding(s) cleaned, {} need a look",
+        "{} {} loader process(es) stopped, {} persistence entr(y/ies) removed, {} of {} finding(s) cleaned, {} need a look",
         util::c(BOLD, "hunt complete:"),
         killed,
+        persist_removed,
         healed,
         found,
         manual.len() + noted + persist_hits.len()
