@@ -150,7 +150,20 @@ fn is_merely_in_use(e: &std::io::Error) -> bool {
 /// author and timestamp. It was found in 101 victim repositories with no false
 /// positives, which makes the filename alone a better signal than anything in
 /// its contents. `spellright.dict` is another binary-looking payload carrier.
-const ARTIFACT_NAMES: &[&str] = &["temp_auto_push.bat", "config.bat", "spellright.dict"];
+///
+/// `temp_interactive_push.bat` is the same propagation script with a prompt in
+/// front of it, and `branch_structure.json` is the manifest it writes to decide
+/// which branches to poison - attacker bookkeeping that no honest project has.
+/// Both were seen alongside `temp_auto_push.bat` in the same incident, and the
+/// originals are quarantined before removal, so a mistaken match stays
+/// recoverable via `quarantine`.
+const ARTIFACT_NAMES: &[&str] = &[
+    "temp_auto_push.bat",
+    "temp_interactive_push.bat",
+    "branch_structure.json",
+    "config.bat",
+    "spellright.dict",
+];
 
 /// Fixed filenames the AppData loader campaign drops. Each is a shim or stage
 /// that is nothing but malware, so - like the propagation artefacts above - the
@@ -409,6 +422,68 @@ pub fn is_config_target(path: &Path) -> bool {
     })
 }
 
+fn is_gitignore(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(|n| n.eq_ignore_ascii_case(".gitignore"))
+        .unwrap_or(false)
+}
+
+/// Propagation artefacts hidden in a `.gitignore`.
+///
+/// Part of this campaign is an edit to `.gitignore` that adds its own dropped
+/// files - `temp_auto_push.bat`, `branch_structure.json` - so that `git status`
+/// stops mentioning them. The payload then sits in the working tree
+/// indefinitely without ever appearing in a diff, which is how the same repo
+/// got re-infected after being cleaned. Nothing honest ignores these names, and
+/// the ignore file is the only artefact of that step.
+///
+/// Reported, never healed: a `.gitignore` holds no executable code, so there is
+/// nothing to cut, and the useful outcome is a human looking at the repository
+/// it belongs to. `Suspicious` is what guarantees that - `heal` returns early on
+/// any finding without a critical hit.
+fn scan_gitignore(path: &Path, data: &[u8]) -> Option<Finding> {
+    let text = String::from_utf8_lossy(data);
+    let mut hits: Vec<Hit> = Vec::new();
+    let mut offset = 0usize;
+    for (n, raw) in text.lines().enumerate() {
+        let start = offset;
+        // `lines()` drops the terminator; +1 tracks it so offsets stay file
+        // offsets. A CRLF file is one byte out per line, which is why these are
+        // only ever used to point a human at a line number.
+        offset += raw.len() + 1;
+        let entry = raw
+            .trim()
+            .trim_start_matches('\u{feff}')
+            .trim_start_matches('/');
+        if entry.is_empty() || entry.starts_with('#') {
+            continue;
+        }
+        let mut hostile = ARTIFACT_NAMES.iter().chain(LOADER_ARTIFACT_NAMES.iter());
+        if hostile.any(|a| a.eq_ignore_ascii_case(entry)) {
+            hits.push(Hit {
+                ioc: "gitignore-hides-artifact",
+                sev: Severity::Suspicious,
+                why: "`.gitignore` entry hides a known propagation artefact from `git status`",
+                start,
+                end: start + raw.len(),
+                line: n + 1,
+            });
+        }
+    }
+    if hits.is_empty() {
+        return None;
+    }
+    Some(Finding {
+        path: path.to_path_buf(),
+        hits,
+        note: Some(
+            "remove the entry and run `git status` - the file it was hiding may still be here"
+                .into(),
+        ),
+    })
+}
+
 fn is_known_detector(path: &Path) -> bool {
     path.file_name()
         .and_then(|s| s.to_str())
@@ -423,6 +498,12 @@ fn has_scannable_ext(path: &Path) -> bool {
         if n == "Dockerfile" || n.starts_with(".env") {
             return true;
         }
+    }
+    // `.gitignore` has no extension, and the step of the attack it records -
+    // hiding the propagation artefacts from `git status` - is visible nowhere
+    // else. See `scan_gitignore`.
+    if is_gitignore(path) {
+        return true;
     }
     if is_artifact(path) || is_loader_artifact(path) {
         return true;
@@ -648,6 +729,11 @@ pub fn scan_file(path: &Path) -> Option<Finding> {
             });
         }
     };
+    // An ignore file carries no code, so the generic matchers have nothing to
+    // find in it; it needs its own reading.
+    if is_gitignore(path) {
+        return scan_gitignore(path, &data);
+    }
     if looks_binary(&data) {
         // Might be UTF-16 rather than genuinely binary.
         let text = decode_utf16(&data)?;
@@ -1023,6 +1109,39 @@ mod tests {
         assert!(is_artifact(Path::new(r"C:\repo\TEMP_AUTO_PUSH.BAT")));
         assert!(is_artifact(Path::new("/repo/config.bat")));
         assert!(!is_artifact(Path::new("/repo/build.bat")));
+        // The rest of the same propagation kit.
+        assert!(is_artifact(Path::new("/repo/temp_interactive_push.bat")));
+        assert!(is_artifact(Path::new("/repo/branch_structure.json")));
+        // Names that merely read alike stay clean.
+        assert!(!is_artifact(Path::new("/repo/structure.json")));
+        assert!(!is_artifact(Path::new("/repo/push.bat")));
+    }
+
+    #[test]
+    fn a_gitignore_hiding_the_propagation_kit_is_reported() {
+        let ignore = b"node_modules\n.env*\n\n# build\n/dist\nbranch_structure.json\ntemp_auto_push.bat\n";
+        let f = scan_gitignore(Path::new("/repo/.gitignore"), ignore)
+            .expect("hidden artefacts must be reported");
+        let iocs: Vec<&str> = f.hits.iter().map(|h| h.ioc).collect();
+        assert_eq!(iocs, vec!["gitignore-hides-artifact"; 2]);
+        assert_eq!(f.hits[0].line, 6);
+        assert_eq!(f.hits[1].line, 7);
+        // Report-only: `heal` refuses anything without a critical hit, and an
+        // ignore file must never be spliced.
+        assert!(!f.is_critical());
+    }
+
+    #[test]
+    fn an_honest_gitignore_is_left_alone() {
+        // Including the `.env*` rule whose removal is itself part of the
+        // compromise - its presence must never read as a finding.
+        let ignore = b"node_modules\n.env*\n*.tsbuildinfo\n# temp_auto_push.bat was here\n/dist\n";
+        assert!(scan_gitignore(Path::new("/repo/.gitignore"), ignore).is_none());
+    }
+
+    #[test]
+    fn gitignore_is_read_despite_having_no_extension() {
+        assert!(has_scannable_ext(Path::new("/repo/.gitignore")));
     }
 
     #[test]

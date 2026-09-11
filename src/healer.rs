@@ -368,7 +368,17 @@ fn strip_once(data: &[u8]) -> Option<Vec<u8>> {
 /// Only removed when `require` is genuinely unused afterwards: plenty of honest
 /// ESM files reach for `createRequire` on purpose.
 fn remove_dead_create_require(data: &mut Vec<u8>) {
-    let text = String::from_utf8_lossy(data).into_owned();
+    // A UTF-8 BOM is part of the file's encoding, not its code, so it is set
+    // aside here and put back verbatim. Without this the shim's own line reads
+    // as "\u{feff}import { createRequire } ...", `starts_with("import")` is
+    // false, and the scaffolding survives a heal - which is exactly what a
+    // Windows editor's default encoding produces. Detection is byte-oriented
+    // and was never affected; only this cleanup was.
+    const BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
+    let bom = data.starts_with(BOM);
+    let body: Vec<u8> = if bom { data[BOM.len()..].to_vec() } else { data.clone() };
+
+    let text = String::from_utf8_lossy(&body).into_owned();
     if !text.contains("createRequire") {
         return;
     }
@@ -388,7 +398,7 @@ fn remove_dead_create_require(data: &mut Vec<u8>) {
         return;
     }
 
-    let mut stripped = data.clone();
+    let mut stripped = body;
     remove_line_where(&mut stripped, is_shim);
     // Tidy the blank line the removal leaves at the top.
     let s = String::from_utf8_lossy(&stripped).into_owned();
@@ -403,7 +413,12 @@ fn remove_dead_create_require(data: &mut Vec<u8>) {
     while t.contains(&triple) {
         t = t.replace(&triple, &double);
     }
-    *data = t.into_bytes();
+    let mut out = Vec::with_capacity(t.len() + if bom { BOM.len() } else { 0 });
+    if bom {
+        out.extend_from_slice(BOM);
+    }
+    out.extend_from_slice(t.as_bytes());
+    *data = out;
 }
 
 /// Remove `(async () => { ... })();` blocks that contain a dropper indicator,
@@ -611,6 +626,23 @@ function bootstrap() {}
         assert!(out.contains("const config = {};"));
         assert!(out.contains("export default config;"));
         assert!(out.starts_with("const config"), "no leading blank lines:\n{out:?}");
+    }
+
+    #[test]
+    fn a_utf8_bom_does_not_save_the_create_require_shim() {
+        // Windows editors write a BOM by default, so a real infected config
+        // often starts with one. It used to make the shim's line read as
+        // "\u{feff}import ..." and survive the heal.
+        let mut src = vec![0xEF, 0xBB, 0xBF];
+        src.extend_from_slice(b"import { createRequire } from 'module';\n\nconst require = createRequire(import.meta.url);\n\nconst config = {};\n\nexport default config;");
+        src.extend(std::iter::repeat(b' ').take(400));
+        src.extend_from_slice(b"global.i = 'A8-2941';require('http')\n");
+        let healed = strip(&src).unwrap();
+        assert_eq!(&healed[..3], &[0xEF, 0xBB, 0xBF], "the BOM is encoding, and must survive");
+        let out = String::from_utf8(healed[3..].to_vec()).unwrap();
+        assert!(!out.contains("createRequire"), "scaffolding must go too:\n{out}");
+        assert!(out.starts_with("const config"), "no leading blank lines:\n{out:?}");
+        assert!(out.contains("export default config;"));
     }
 
     #[test]
