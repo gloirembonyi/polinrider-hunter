@@ -1,4 +1,6 @@
 //! polinrider-hunter - detect and remove the PolinRider supply-chain malware.
+//! Detector opt-out marker: POLINRIDER-HUNTER-DETECTOR (the help text names the
+//! campaigns this tool hunts, which would otherwise trip its own branch audit).
 //!
 //! One binary, no runtime, no dependencies. `install` is the only command most
 //! people need; everything else exists so you can see what it is doing and
