@@ -24,7 +24,7 @@
 //! state directory, so a run can be audited afterwards.
 
 use std::collections::HashSet;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -446,6 +446,11 @@ impl Agent {
     // ---- human in the loop -------------------------------------------------
 
     fn read_line(prompt: &str) -> Option<String> {
+        // Fail closed when nobody can answer: under `cargo test`, a CI runner or a
+        // pipe that stays open, a blocking read here would hang forever.
+        if !std::io::stdin().is_terminal() {
+            return None;
+        }
         print!("{prompt}");
         let _ = std::io::stdout().flush();
         let mut s = String::new();
