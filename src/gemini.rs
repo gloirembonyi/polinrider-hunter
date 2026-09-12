@@ -8,7 +8,7 @@
 //!
 //! Models: the free tier of the Gemini API covers the Flash family. The client
 //! walks a fallback chain (configured model → `gemini-2.5-flash` →
-//! `gemini-2.5-flash-lite` → `gemini-3.1-flash-lite`) on a 404 (model not
+//! `gemini-3.1-flash-lite` → `flash-lite-latest`) on a 404 (model not
 //! available to this key), 429 (free-tier quota) or 5xx, so a run does not die
 //! on a quota blip. Google's security-tuned models (`gemini-3.8-flash-cyber`,
 //! Sec-Gemini) are gated to enrolled testers; anyone who has one sets
@@ -20,7 +20,7 @@ use crate::json::{self, Json};
 use crate::util;
 
 pub const DEFAULT_MODEL: &str = "gemini-3.8-flash";
-pub const FALLBACK_MODELS: &[&str] = &["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-3.1-flash-lite"];
+pub const FALLBACK_MODELS: &[&str] = &["gemini-2.5-flash", "gemini-flash-latest", "gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"];
 const ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
 /// Anything that can answer a turn with text and/or function calls. The live
