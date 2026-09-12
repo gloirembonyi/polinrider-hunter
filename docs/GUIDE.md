@@ -155,6 +155,14 @@ every pass.
 | `quarantine` | list the originals kept aside |
 | `protect <repo>` | just the pre-commit hook |
 
+## 4b. After a real infection: take the access back
+
+Removing the payload does not remove what it stole. A stealer that ran as you has your git
+credentials, your GitHub tokens and everything in your `.env` files, and it will simply push
+again. [`AFTER_AN_INFECTION.md`](AFTER_AN_INFECTION.md) walks through it in order: clean every
+machine first, then revoke OAuth/GitHub apps, tokens, SSH keys and sessions, clear the
+credentials cached locally, rotate every secret the machine could read, and verify the remote.
+
 ## 5. What it detects now (2026)
 
 | Campaign | How it hides | Detection | Removal |

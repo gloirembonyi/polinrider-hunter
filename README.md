@@ -17,6 +17,10 @@ tools, plus file reading, git history, process/persistence listing, web search
 and hash lookups — every change to your machine shown to you for a `y` first.
 The step-by-step is in [`docs/GUIDE.md`](docs/GUIDE.md).
 
+**Already infected?** Cleaning the files is half the job — whatever ran as you also took
+your git credentials and your tokens. [`docs/AFTER_AN_INFECTION.md`](docs/AFTER_AN_INFECTION.md)
+is the 30-minute runbook for taking that access back.
+
 One binary. No runtime to install, no dependencies to audit - the whole thing is
 Rust standard library, on purpose.
 
