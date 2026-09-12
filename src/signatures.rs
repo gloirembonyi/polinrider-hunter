@@ -623,6 +623,11 @@ pub const CORROBORATING: &[&str] = &[
     "glassworm-decoder",
     "solana-c2-memo",
     "solana-rpc",
+    // A screenshot or keyboard-hook dependency on its own is an ordinary desktop
+    // app (a real sweep flagged VS Code's Jupyter extension). The fake-interview
+    // backdoor is recognised by the PAIR - scanner::refine promotes that.
+    "keylogger-dep",
+    "screenshot-dep",
     // On its own, "refreshPersistence" is a name an honest program could use.
     // It earns its keep only beside the obfuscation the loader ships with.
     "node-loader-refresh",

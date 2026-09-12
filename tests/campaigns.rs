@@ -172,8 +172,7 @@ fn the_fake_interview_keylogger_kit_is_critical_only_as_a_pair() {
     assert!(f.hits.iter().any(|h| h.ioc == "keylogger-kit"));
 
     let single = sb.write("b/package.json", br#"{"dependencies":{"screenshot-desktop":"^1.15.0"}}"#);
-    let f2 = scanner::scan_file(&single).expect("finding");
-    assert!(!f2.is_critical(), "one of the pair alone is a suspicion, not an infection");
+    assert!(scanner::scan_file(&single).is_none(), "one of the pair alone is an ordinary desktop app, not a finding");
 }
 
 #[test]
