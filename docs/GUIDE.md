@@ -77,6 +77,60 @@ or rebase that work by hand, `clean` + commit, then run `--fix` again.
 Order that works: **commit your clean local work first**, then `repos --fix`.
 Whatever is in your local branch is what the remote becomes.
 
+## 2b. Let the AI investigate: `agent`
+
+`agent` puts a Gemini model in front of every command above, with you approving
+anything that changes the machine. It is for the questions the scanners cannot
+answer on their own: *how did this get here, is this package known-bad, what
+else on this machine talks to that address, which commit and which account
+introduced it, what do I still have to rotate?*
+
+```powershell
+polinrider-hunter set-key AIza...          # free key: https://aistudio.google.com/apikey (no card)
+polinrider-hunter agent                    # interactive: it investigates, you steer with plain text
+polinrider-hunter agent --task "Find out how the Startup shim got here and whether anything else launches from AppData"
+polinrider-hunter agent ~/work/repo-a ~/work/repo-b    # focus on these projects
+polinrider-hunter report                   # a written incident report (AI-written with a key, factual without)
+```
+
+What it can do (its *tools*): `scan`, `clean`, `repos_audit`, `repos_fix`,
+`processes`, `kill_process`, `persistence`, `remove_persistence`, `read_file`,
+`list_dir` (with "modified in the last N days"), `hash_file`, `threat_intel`
+(VirusTotal, if you add `--vt-key`), `web_search`, `web_fetch`, `run_command`,
+`quarantine_list`, `ask_user`, `write_report`, `finish`.
+
+How the human stays in the loop:
+
+- **Read-only runs freely** — scanning, reading files, listing directories,
+  hashing, searching, and shell commands on a read-only allow-list (`git log/
+  show/diff/status`, `dir`/`ls`, `type`/`cat`, `findstr`/`grep`, `tasklist`,
+  `reg query`, `schtasks /query`, `netstat`, `Get-*` PowerShell…).
+- **Anything mutating asks first** — `clean`, `remove_persistence`, `repos_fix`,
+  `kill_process`, and any other command. You see the exact command and its
+  reason and answer `y` / `n` (with an optional reason the agent gets to read) /
+  `e` to edit a command / `a` always for that tool / `q` quit.
+- **Some things are refused even with approval** — disk wipes, mass deletes,
+  registry-wide deletes, and download-and-execute one-liners (`curl | sh`,
+  `powershell -enc`, `mshta`, `iex`).
+- **`--yes`** pre-approves the mutating tools for people who have already
+  decided; the refusal list still applies. In the REPL, `/yes` toggles it.
+- Every turn, tool call and result is appended to a transcript in the state
+  directory (`agent\<timestamp>.jsonl`), reports go to `reports\`.
+
+The agent's method is the incident-response loop — triage, scope, contain,
+eradicate, root cause, recover, report — and its rules say evidence first
+(paths, lines, commit hashes, authors, dates, IPs), never guess a finding, and
+treat web results as leads, not instructions. When it sees the campaign's
+signature move — your own commits re-pushed with payloads — it will tell you the
+credential that pushed them is compromised and put rotation at the top of the
+report.
+
+Models: the free Gemini tier (Flash family) is enough. The client tries the
+configured model first, then falls back (`gemini-2.5-flash` → `flash-lite` →
+`3.1-flash-lite`) on quota or availability errors. If you have access to a
+security-tuned model (Gemini Flash *Cyber*, Sec-Gemini), `set-key … --model <id>`
+puts it first in line.
+
 ## 3. Keep it clean: `install`
 
 ```powershell
@@ -120,14 +174,18 @@ branch audit (`git grep`) cannot express invisible-Unicode runs, so GlassWorm on
 an un-checked-out branch is caught only after checkout/`hunt`; JSON/YAML/UTF-16
 are reported rather than spliced.
 
-## 6. This incident (September 2026), for the record
+## 6. What a real infection looked like (a worked example)
 
-On the machine this was written on, `hunt --dry-run` + `persistence` + `repos`
-found: the `MicrosoftCLROptimization.vbs` Startup shim (payload already gone,
-launcher still armed); the `runtimedev-link` loader's `agent.env`,
-`agent.env.bat`, `start.vbs`, `runtimedev-link.task.xml`; and **five** GitHub
-repositories whose `main`/`master` had been re-pushed with PolinRider payloads
-(`api/index.js` + `agent.routes.js`, `postcss.config.mjs`, `public/fonts/fa-solid-500.woff2`
-+ `.vscode/tasks.json`, `frontend/vite.config.ts` + a dropped `.env`). Working
-trees were clean. `hunt` removed the local files and shim; `repos --fix`
-restored every remote branch from the clean local commit.
+On one developer machine, `hunt --dry-run` + `persistence` + `repos` found, all
+at once: a `MicrosoftCLROptimization.vbs` Startup shim (its fake `ngen.exe`
+payload already gone, the launcher still armed); the `runtimedev-link` npm
+loader's `agent.env`, `agent.env.bat`, `start.vbs` and task XML under
+`~/.config` and `~/.local/share`; two staged loaders in `%TEMP%`; and every one
+of the developer's GitHub repositories with its default branch re-pushed as the
+developer's own latest commit plus a payload — in `api/index.js`, a route file,
+`postcss.config.mjs`, a `.woff2` "font" plus `.vscode/tasks.json`, a
+`vite.config.ts` plus a dropped `.env`. The working trees were clean, which is
+exactly why nothing looked wrong. `hunt` removed the shim and the files,
+`repos --fix` restored every remote branch from the clean local commit, and the
+report's first recommendation was to rotate the GitHub credential that had been
+used to push.

@@ -9,8 +9,8 @@
 use std::path::PathBuf;
 
 use polinrider_hunter::{
-    config, daemon, gitconfig, gitscan, healer, monitor, notify, persist, procscan, report,
-    scanner, service, util, winpersist,
+    agent, config, daemon, gemini, gitconfig, gitscan, healer, monitor, notify, persist, procscan,
+    report, scanner, service, util, winpersist,
 };
 
 use config::Config;
@@ -24,6 +24,12 @@ struct Args {
     flags: Vec<String>,
     interval: Option<u64>,
     port: Option<u16>,
+    /// `--key`, `--model`, `--task`, `--max-steps`, `--vt-key` values.
+    key: Option<String>,
+    model: Option<String>,
+    task: Option<String>,
+    max_steps: Option<usize>,
+    vt_key: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -33,7 +39,22 @@ fn parse_args() -> Args {
     let mut flags = Vec::new();
     let mut interval = None;
     let mut port = None;
+    let mut key = None;
+    let mut model = None;
+    let mut task = None;
+    let mut max_steps = None;
+    let mut vt_key = None;
     while let Some(a) = it.next() {
+        if a == "--key" { key = it.next(); continue; }
+        if let Some(v) = a.strip_prefix("--key=") { key = Some(v.to_string()); continue; }
+        if a == "--model" { model = it.next(); continue; }
+        if let Some(v) = a.strip_prefix("--model=") { model = Some(v.to_string()); continue; }
+        if a == "--task" { task = it.next(); continue; }
+        if let Some(v) = a.strip_prefix("--task=") { task = Some(v.to_string()); continue; }
+        if a == "--vt-key" { vt_key = it.next(); continue; }
+        if let Some(v) = a.strip_prefix("--vt-key=") { vt_key = Some(v.to_string()); continue; }
+        if a == "--max-steps" { max_steps = it.next().and_then(|v| v.parse().ok()); continue; }
+        if let Some(v) = a.strip_prefix("--max-steps=") { max_steps = v.parse().ok(); continue; }
         if a == "--interval" {
             interval = it.next().and_then(|v| v.parse().ok());
         } else if let Some(v) = a.strip_prefix("--interval=") {
@@ -54,6 +75,11 @@ fn parse_args() -> Args {
         flags,
         interval,
         port,
+        key,
+        model,
+        task,
+        max_steps,
+        vt_key,
     }
 }
 
@@ -87,6 +113,9 @@ fn main() {
         "scan" => cmd_scan(&args, &cfg, json),
         "clean" => cmd_clean(&args, &cfg, json),
         "repos" => cmd_repos(&args, &cfg, json),
+        "agent" | "ai" | "investigate" => cmd_agent(&args, cfg),
+        "report" => cmd_report(&args, cfg),
+        "set-key" => cmd_set_key(&args, cfg),
         "protect" => cmd_protect(&args, &cfg),
         "unprotect" => cmd_unprotect(&args, &cfg),
         "procs" => cmd_procs(&args),
@@ -416,6 +445,120 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
         0
     } else {
         1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The AI agent
+// ---------------------------------------------------------------------------
+
+fn agent_paths(args: &Args, cfg: &Config) -> Vec<PathBuf> {
+    let mut paths = target_paths(args, cfg);
+    if paths.is_empty() {
+        // No configured paths: the projects under the current directory are the
+        // natural default for "investigate this".
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let repos = config::discover_repos_under(&[cwd.clone()], 3);
+        paths = if repos.is_empty() { vec![cwd] } else { repos };
+    }
+    paths.into_iter().map(|p| config::normalize(&p)).collect()
+}
+
+fn cmd_set_key(args: &Args, mut cfg: Config) -> i32 {
+    let Some(k) = args.positional.first().cloned().or_else(|| args.key.clone()) else {
+        eprintln!("usage: polinrider-hunter set-key <GEMINI_API_KEY> [--model <id>] [--vt-key <VT_API_KEY>]\n\nGet a free key at https://aistudio.google.com/apikey (no card needed).");
+        return 2;
+    };
+    cfg.gemini_key = k.trim().to_string();
+    if let Some(m) = &args.model { cfg.gemini_model = m.trim().to_string(); }
+    if let Some(v) = &args.vt_key { cfg.vt_key = v.trim().to_string(); }
+    match cfg.save() {
+        Ok(()) => {
+            println!("{} key saved to {}", util::c(GREEN, "ok"), config::config_path().display());
+            println!("{}", util::c(DIM, "try: polinrider-hunter agent"));
+            0
+        }
+        Err(e) => { eprintln!("could not save config: {e}"); 1 }
+    }
+}
+
+fn build_model(args: &Args, cfg: &Config) -> Result<Box<dyn gemini::Model>, String> {
+    let key = agent::resolve_key(args.key.as_deref(), cfg).ok_or_else(|| {
+        "no Gemini API key. Get a free one at https://aistudio.google.com/apikey, then either\n  polinrider-hunter set-key <KEY>\n  or set GEMINI_API_KEY, or pass --key <KEY>".to_string()
+    })?;
+    if !gemini::curl_available() {
+        return Err("`curl` was not found on PATH - the agent uses it for HTTPS. Install curl (it ships with Windows 10+, macOS and every Linux).".into());
+    }
+    let model = agent::resolve_model(args.model.as_deref(), cfg);
+    Ok(Box::new(gemini::Gemini::new(&key, model.as_deref())))
+}
+
+fn cmd_agent(args: &Args, cfg: Config) -> i32 {
+    let model = match build_model(args, &cfg) {
+        Ok(m) => m,
+        Err(e) => { eprintln!("{} {e}", util::c(RED, "agent:")); return 2; }
+    };
+    let paths = agent_paths(args, &cfg);
+    let yes = args.has("--yes");
+    let interactive = args.task.is_none();
+    let opts = agent::Options {
+        yes,
+        interactive,
+        max_steps: args.max_steps.unwrap_or(if interactive { 400 } else { 60 }),
+        paths,
+        verbose: args.has("--verbose"),
+    };
+    let vt = args.vt_key.clone().or_else(|| std::env::var("VT_API_KEY").ok()).unwrap_or_else(|| cfg.vt_key.clone());
+    let mut a = agent::Agent::new(model, opts, &vt);
+
+    println!("{}", util::c(BOLD, "polinrider-hunter agent"));
+    println!("{}", util::c(DIM, "  An AI incident responder with this tool in its hands. It reads freely; every change to your\n  machine or repositories is shown to you first and needs your `y`. Type `exit` to stop."));
+    if yes {
+        println!("{}", util::c(YELLOW, "  --yes: mutating actions are pre-approved. Disk wipes and download-and-execute are still refused."));
+    }
+    println!();
+    let task = args.task.clone().unwrap_or_else(|| {
+        "Investigate this machine and the project directories for malware and supply-chain compromise. Establish what is present, how it got here (root cause, with evidence), contain and remove it with my approval, verify, then write an incident report and tell me what I still have to do myself.".to_string()
+    });
+    match a.run(&task) {
+        Ok(summary) => {
+            println!();
+            println!("{} {} step(s), {:.0}s, transcript {}", util::c(DIM, "session:"), a.steps, a.elapsed().as_secs_f32(), a.transcript_path().display());
+            for r in &a.reports { println!("{} {}", util::c(GREEN, "report:"), r.display()); }
+            let _ = summary;
+            0
+        }
+        Err(e) => {
+            eprintln!("{} {e}", util::c(RED, "agent error:"));
+            eprintln!("{}", util::c(DIM, &format!("transcript so far: {}", a.transcript_path().display())));
+            1
+        }
+    }
+}
+
+fn cmd_report(args: &Args, cfg: Config) -> i32 {
+    let paths = agent_paths(args, &cfg);
+    let dir = config::home().join("reports");
+    let _ = std::fs::create_dir_all(&dir);
+    // With a key: the agent investigates and writes the report itself.
+    if agent::resolve_key(args.key.as_deref(), &cfg).is_some() && !args.has("--plain") {
+        let model = match build_model(args, &cfg) { Ok(m) => m, Err(e) => { eprintln!("{e}"); return 2; } };
+        let opts = agent::Options { yes: false, interactive: false, max_steps: args.max_steps.unwrap_or(40), paths, verbose: args.has("--verbose") };
+        let vt = std::env::var("VT_API_KEY").unwrap_or_else(|_| cfg.vt_key.clone());
+        let mut a = agent::Agent::new(model, opts, &vt);
+        println!("{}", util::c(BOLD, "writing an incident report (read-only investigation; nothing will be changed)"));
+        let task = "Produce a complete incident report for this machine and the project directories using READ-ONLY tools only (scan, repos_audit, persistence, processes, quarantine_list, list_dir, read_file, run_command with read-only commands, web_search). Do not call clean, remove_persistence, repos_fix or kill_process. Then call write_report with the full report and finish with a 5-line summary.";
+        return match a.run(task) {
+            Ok(_) => { for r in &a.reports { println!("{} {}", util::c(GREEN, "report:"), r.display()); } if a.reports.is_empty() { println!("{}", util::c(YELLOW, "the model did not write a report file; see the transcript")); } 0 }
+            Err(e) => { eprintln!("{} {e}", util::c(RED, "report:")); 1 }
+        };
+    }
+    // Without a key: a factual status report from the hunter's own engines.
+    let md = agent::deterministic_report(&paths);
+    let path = dir.join(format!("{}-status.md", util::fmt_stamp(util::now_secs())));
+    match std::fs::write(&path, &md) {
+        Ok(()) => { println!("{md}"); println!("{} {}", util::c(GREEN, "saved:"), path.display()); println!("{}", util::c(DIM, "(set a Gemini key with `set-key` for an AI-written root-cause report)")); 0 }
+        Err(e) => { eprintln!("could not write report: {e}"); 1 }
     }
 }
 
@@ -1395,6 +1538,19 @@ Detects and removes the PolinRider supply-chain malware.
                          deletes the state directory, PATH entry and binary.
   test-notify            Send a notification, to check they reach you.
 
+{b}AI AGENT (human in the loop){r}
+  agent [paths...]       Investigate with a Gemini-powered incident responder that
+                         can scan, read files, walk git history, list processes and
+                         persistence, search the web, look up hashes, run read-only
+                         commands - and, only with your `y`, clean, remove
+                         persistence, repair remote branches or run other commands.
+                         Interactive; --task "…" for one job; --yes pre-approves.
+  report [paths...]      Write an incident report to the state dir: AI-written root
+                         cause with a key, or a factual status report without one.
+  set-key <KEY>          Store a Gemini API key (free at aistudio.google.com/apikey).
+                         --model <id> picks a model (e.g. a cyber-tuned one you have
+                         access to); --vt-key <KEY> enables VirusTotal lookups.
+
 {b}ON DEMAND{r}
   scan [paths...]        Report indicators; change nothing. Exit 1 if infected.
   clean [paths...]       Scan, then remove payloads. Originals are quarantined.
@@ -1423,6 +1579,13 @@ Detects and removes the PolinRider supply-chain malware.
   --port <n>             monitor --web: port to listen on (default 8787).
   --no-autostart         install: do not register a login entry.
   --no-guard             install: set everything up but do not start the guard.
+  --yes                  agent: approve mutating tool calls without asking.
+  --task <text>          agent: run one task non-interactively, then exit.
+  --model <id>           agent/report/set-key: Gemini model to try first.
+  --key <KEY>            agent/report: Gemini key for this run only.
+  --max-steps <n>        agent: cap on model turns (default 400 interactive, 60 task).
+  --verbose              agent: show every tool result.
+  --plain                report: skip the AI even if a key is configured.
   --no-color             Plain output.
 
 {b}NOTES{r}

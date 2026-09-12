@@ -11,8 +11,11 @@ extensions, the **npm-loader** (`runtimedev-link`) variant of the AppData
 campaign, **Contagious Interview** keylogger kits, injected **git config**
 (`core.fsmonitor`, hooks, nested bare repositories — "GitSpawn"), install-script
 droppers, pwn-request workflows and **ClickFix** run history — and it can repair
-a **poisoned remote branch** (`repos --fix`). The step-by-step is in
-[`docs/GUIDE.md`](docs/GUIDE.md).
+a **poisoned remote branch** (`repos --fix`). Since 1.2 there is an **AI
+incident-response agent** (`agent`): a Gemini model with all of the above as
+tools, plus file reading, git history, process/persistence listing, web search
+and hash lookups — every change to your machine shown to you for a `y` first.
+The step-by-step is in [`docs/GUIDE.md`](docs/GUIDE.md).
 
 One binary. No runtime to install, no dependencies to audit - the whole thing is
 Rust standard library, on purpose.
@@ -255,6 +258,11 @@ install [paths...]     Watch these directories, install a pre-commit hook in eac
 status                 Where everything lives; whether the guard is alive.
 uninstall              Stop the guard, remove the hooks.
 
+agent [paths...]       AI investigation with human approval of every change
+                       (needs a free Gemini key: `set-key <KEY>`). --task "…"
+                       for one job, --yes to pre-approve.
+report [paths...]      Written incident report (AI root-cause with a key).
+set-key <KEY>          Store the Gemini key (--model, --vt-key optional).
 scan [paths...]        Report only. Exit 1 if anything critical.
 clean [paths...]       Scan, then remove payloads. --dry-run to preview.
 repos [paths...]       Fetch and audit every branch, local and remote-tracking,

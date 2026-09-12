@@ -19,6 +19,12 @@ pub struct Config {
     pub kill_procs: bool,
     /// Raise a desktop notification when something is found.
     pub notify: bool,
+    /// Gemini API key for the `agent` / AI `report` commands (or GEMINI_API_KEY).
+    pub gemini_key: String,
+    /// Preferred Gemini model; empty = the built-in default + fallback chain.
+    pub gemini_model: String,
+    /// VirusTotal API key for the agent's threat_intel tool (or VT_API_KEY).
+    pub vt_key: String,
 }
 
 impl Default for Config {
@@ -31,6 +37,9 @@ impl Default for Config {
             auto_heal: true,
             kill_procs: true,
             notify: true,
+            gemini_key: String::new(),
+            gemini_model: String::new(),
+            vt_key: String::new(),
         }
     }
 }
@@ -156,6 +165,9 @@ impl Config {
                 "auto_heal" => cfg.auto_heal = parse_bool(v, cfg.auto_heal),
                 "kill_procs" => cfg.kill_procs = parse_bool(v, cfg.kill_procs),
                 "notify" => cfg.notify = parse_bool(v, cfg.notify),
+                "gemini_key" => cfg.gemini_key = v.to_string(),
+                "gemini_model" => cfg.gemini_model = v.to_string(),
+                "vt_key" => cfg.vt_key = v.to_string(),
                 _ => {}
             }
         }
@@ -177,6 +189,12 @@ impl Config {
         s.push_str(&format!("auto_heal = {}\n", self.auto_heal));
         s.push_str(&format!("kill_procs = {}\n", self.kill_procs));
         s.push_str(&format!("notify = {}\n", self.notify));
+        if !self.gemini_key.is_empty() || !self.gemini_model.is_empty() || !self.vt_key.is_empty() {
+            s.push_str("\n# AI agent (`polinrider-hunter agent`). Keys can also come from GEMINI_API_KEY / VT_API_KEY.\n");
+            if !self.gemini_key.is_empty() { s.push_str(&format!("gemini_key = {}\n", self.gemini_key)); }
+            if !self.gemini_model.is_empty() { s.push_str(&format!("gemini_model = {}\n", self.gemini_model)); }
+            if !self.vt_key.is_empty() { s.push_str(&format!("vt_key = {}\n", self.vt_key)); }
+        }
         std::fs::write(config_path(), s)
     }
 }

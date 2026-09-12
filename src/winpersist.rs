@@ -335,6 +335,7 @@ fn sweep_startup_folders(dry: bool, out: &mut Vec<Action>) {
 /// history, not persistence - but it is the clearest evidence that a fake
 /// CAPTCHA was actually executed on this machine.
 pub fn clickfix_history() -> Vec<String> {
+    #[allow(unused_mut)]
     let mut out = Vec::new();
     #[cfg(windows)]
     {

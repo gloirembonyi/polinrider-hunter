@@ -473,8 +473,8 @@ pub static IOCS: &[Ioc] = &[
     // ---- the npm-published loader the AppData campaign launches via `npx -y` --------
     Ioc {
         id: "npm-loader-runtimedev",
-        sev: Severity::Critical,
-        why: "runtimedev-link: malicious npm package the AppData loader starts with `npx -y ... --token <C2>|<hash>`",
+        sev: Severity::Suspicious,
+        why: "runtimedev-link: the malicious npm package the AppData loader starts with `npx -y` (a name - counts beside a real indicator)",
         kind: Kind::LitCi("runtimedev-link"),
     },
     Ioc {
@@ -486,8 +486,8 @@ pub static IOCS: &[Ioc] = &[
     // ---- Shai-Hulud (self-propagating npm worm, 2025-2026) --------------------------
     Ioc {
         id: "shai-hulud",
-        sev: Severity::Critical,
-        why: "Shai-Hulud: the npm worm's own name (repo it creates, workflow it injects, bundle it ships)",
+        sev: Severity::Suspicious,
+        why: "Shai-Hulud: the npm worm's own name (a name - security notes and scanners say it too; counts beside a real indicator)",
         kind: Kind::LitCi("shai-hulud"),
     },
     Ioc {
@@ -620,6 +620,12 @@ pub const CORROBORATING: &[&str] = &[
     // RPC or the decoder's constant all have honest uses on their own.
     "trufflehog",
     "webhook-site",
+    // Names of a worm and of a malicious package. A README, a scanner, a patch
+    // script or an incident note legitimately contains them; on their own they
+    // are context, not an infection (the hunter cut its own author's notes
+    // before this line existed).
+    "shai-hulud",
+    "npm-loader-runtimedev",
     "glassworm-decoder",
     "solana-c2-memo",
     "solana-rpc",
