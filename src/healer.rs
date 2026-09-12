@@ -341,6 +341,12 @@ pub fn strip(data: &[u8]) -> Option<Vec<u8>> {
 
 /// Remove one payload.
 fn strip_once(data: &[u8]) -> Option<Vec<u8>> {
+    // Shape 0: GlassWorm - a run of invisible code points carrying the payload,
+    // cut from the start of the run to the end of its line (the decoder that
+    // follows on the same line goes with it; the code before it stays).
+    if let Some(out) = strip_invisible_run(data) {
+        return Some(out);
+    }
     // Shape 1: the NestJS dropper - an injected `import 'dotenv/config'` plus a
     // self-invoking async block that decodes a URL, fetches code and evals it.
     if let Some(out) = strip_iife_dropper(data) {
@@ -480,6 +486,55 @@ fn strip_padded_tail(data: &[u8]) -> Option<Vec<u8>> {
     out.extend_from_slice(&data[..cut]);
     out.extend_from_slice(&data[end..]);
     Some(out)
+}
+
+/// Cut an invisible-Unicode payload (GlassWorm) out of its line.
+///
+/// The visible code before the run on the same line is kept; everything from
+/// the first invisible code point to the end of the line is removed. If that
+/// leaves the line empty, the line goes too so no blank scar remains.
+fn strip_invisible_run(data: &[u8]) -> Option<Vec<u8>> {
+    let hits = signatures::scan(data);
+    let run = hits.iter().find(|h| h.ioc == signatures::INVISIBLE_IOC)?;
+    let end = data[run.start..]
+        .iter()
+        .position(|&b| b == b'\r' || b == b'\n')
+        .map(|p| run.start + p)
+        .unwrap_or(data.len());
+    let mut cut = run.start;
+    // Line start.
+    let line_start = data[..cut].iter().rposition(|&b| b == b'\n').map(|p| p + 1).unwrap_or(0);
+    let prefix = &data[line_start..cut];
+    let prefix_blank = prefix.iter().all(|&b| b == b' ' || b == b'\t');
+    // `const _ = '<invisible…>';eval(...)`: the run sits inside an expression
+    // that begins on this line, so the whole line is the payload. An unbalanced
+    // quote, or a trailing `=`/`(`/`,`/`[`/`{`/`:`/`+`, means exactly that.
+    let odd = |q: u8| prefix.iter().filter(|&&b| b == q).count() % 2 == 1;
+    let trimmed_end = prefix.iter().rposition(|&b| b != b' ' && b != b'\t').map(|i| prefix[i]);
+    let embedded = odd(b'\'') || odd(b'"') || odd(b'`')
+        || matches!(trimmed_end, Some(b'=') | Some(b'(') | Some(b',') | Some(b'[') | Some(b'{') | Some(b':') | Some(b'+'));
+    let mut tail = end;
+    if prefix_blank || embedded {
+        cut = line_start;
+        // Take the terminator too, so the line disappears entirely.
+        if data.get(tail) == Some(&b'\r') { tail += 1; }
+        if data.get(tail) == Some(&b'\n') { tail += 1; }
+    } else {
+        // Trim the whitespace that separated code from payload.
+        while cut > line_start && (data[cut - 1] == b' ' || data[cut - 1] == b'\t') {
+            cut -= 1;
+        }
+    }
+    let mut out = Vec::with_capacity(data.len() - (tail - cut));
+    out.extend_from_slice(&data[..cut]);
+    out.extend_from_slice(&data[tail..]);
+    Some(out)
+}
+
+/// Public wrapper: quarantine a file without healing it (used for whole-file
+/// removals done by other modules, e.g. a Startup shim).
+pub fn quarantine_file(path: &Path, iocs: &[&str]) -> std::io::Result<PathBuf> {
+    quarantine(path, iocs)
 }
 
 /// Collapse a run of three or more consecutive newlines around `at` to two.

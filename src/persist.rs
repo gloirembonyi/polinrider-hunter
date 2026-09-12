@@ -36,7 +36,7 @@ const EXEC: &[&str] = &["| sh", "|sh", "| bash", "|bash", "| iex", "|iex",
                         "Invoke-Expression", "eval ", "eval(", "node -e", "python -c"];
 
 /// A line that both fetches and executes, or decodes and executes.
-fn is_fetch_exec(line: &str) -> Option<&'static str> {
+pub fn is_fetch_exec(line: &str) -> Option<&'static str> {
     let l = line.trim();
     if l.starts_with('#') || l.is_empty() {
         return None;

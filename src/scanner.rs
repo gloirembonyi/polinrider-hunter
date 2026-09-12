@@ -171,8 +171,30 @@ const ARTIFACT_NAMES: &[&str] = &[
 /// has no extension (it rides a renamed pythonw), so name-matching is the only
 /// way it is ever read at all. The random per-victim loader (`tg14xq.js` on the
 /// machine this was found on) is caught by its contents, not this list.
-const LOADER_ARTIFACT_NAMES: &[&str] =
-    &["clr_init.vbs", "clr_task.xml", "VSCodeUpdater.vbs", "NativeImageGen"];
+const LOADER_ARTIFACT_NAMES: &[&str] = &[
+    "clr_init.vbs",
+    "clr_task.xml",
+    "VSCodeUpdater.vbs",
+    "NativeImageGen",
+    // The npm-loader variant: a scheduled-task definition and its `npx -y
+    // runtimedev-link` shim, dropped under ~/.local/share/runtimedev-link.
+    "runtimedev-link.task.xml",
+    // Shai-Hulud v2's bootstrap pair.
+    "setup_bun.js",
+    "bun_environment.js",
+];
+
+/// npm packages that are malware by name. A copy in the npx cache or the global
+/// modules directory is an infection waiting to be re-run.
+pub const MALICIOUS_PACKAGES: &[&str] = &[
+    "runtimedev-link",
+    "tailwindcss-style-animate",
+    "tailwind-mainanimation",
+    "tailwind-autoanimation",
+    "tailwindcss-typography-style",
+    "tailwindcss-style-modify",
+    "tailwindcss-animate-style",
+];
 
 /// Data files that should never contain executable code.
 const DISGUISE_EXTS: &[&str] = &["woff2", "woff", "ttf", "otf", "eot", "dict", "dat", "bin"];
@@ -257,7 +279,23 @@ const SCAN_EXTS: &[&str] = &[
     // (`clr_task.xml`), which launches a .vbs shim; without it the task file is
     // never read.
     "config", "lock", "md", "xml",
+    // Editor extensions (GlassWorm) ship as plain .js, already covered; their
+    // manifests and the VSIX unpack directory are read for the same reason.
+    "mjs", "vsixmanifest",
 ];
+
+/// Hooks and other extensionless scripts that Git or an editor executes.
+fn is_extensionless_script(path: &Path) -> bool {
+    if path.extension().is_some() {
+        return false;
+    }
+    let parent = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    matches!(parent, "hooks" | ".husky" | "_" | "bin" | ".githooks")
+}
 
 /// Font extensions. PolinRider's autorun variant drops its payload as
 /// `public/fonts/fa-solid-400.woff2` and runs it with `node`, betting that
@@ -505,7 +543,7 @@ fn has_scannable_ext(path: &Path) -> bool {
     if is_gitignore(path) {
         return true;
     }
-    if is_artifact(path) || is_loader_artifact(path) {
+    if is_artifact(path) || is_loader_artifact(path) || is_extensionless_script(path) {
         return true;
     }
     path.extension()
@@ -603,6 +641,124 @@ fn find_lit_ci(hay: &[u8], needle: &[u8]) -> Option<usize> {
 /// alignment or sloppy formatting rather than camouflage.
 const NON_EXECUTING_EXTS: &[&str] = &["md", "markdown", "txt", "rst", "adoc", "csv", "lock"];
 
+/// Files an interpreter or the editor will execute, where invisible Unicode is
+/// camouflage rather than content.
+const CODE_EXTS: &[&str] = &[
+    "js", "mjs", "cjs", "jsx", "ts", "tsx", "mts", "cts", "vue", "svelte", "py", "rb", "php",
+    "sh", "bash", "ps1", "psm1", "bat", "cmd", "vbs",
+];
+
+/// npm lifecycle scripts that run on `npm install` without anyone asking.
+const LIFECYCLE_KEYS: &[&str] = &[
+    "preinstall", "install", "postinstall", "prepare", "preprepare", "postprepare", "prepublish",
+];
+
+/// Read `"key": "value"` string values for the given keys out of raw JSON text.
+///
+/// A dedicated parser would be more correct; this is enough for `package.json`
+/// as npm itself writes it, and it never has to *modify* the file.
+fn json_string_values<'a>(data: &'a str, key: &str) -> Vec<(usize, &'a str)> {
+    let mut out = Vec::new();
+    let needle = format!("\"{key}\"");
+    let mut from = 0usize;
+    while let Some(rel) = data[from..].find(&needle) {
+        let at = from + rel;
+        let mut j = at + needle.len();
+        let bytes = data.as_bytes();
+        while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t' || bytes[j] == b'\r' || bytes[j] == b'\n') { j += 1; }
+        if j < bytes.len() && bytes[j] == b':' {
+            j += 1;
+            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t' || bytes[j] == b'\r' || bytes[j] == b'\n') { j += 1; }
+            if j < bytes.len() && bytes[j] == b'"' {
+                let vs = j + 1;
+                let mut k = vs;
+                while k < bytes.len() {
+                    if bytes[k] == b'\\' { k += 2; continue; }
+                    if bytes[k] == b'"' { break; }
+                    k += 1;
+                }
+                if k <= bytes.len() {
+                    if let Some(v) = data.get(vs..k.min(bytes.len())) {
+                        out.push((at, v));
+                    }
+                }
+            }
+        }
+        from = at + needle.len();
+    }
+    out
+}
+
+/// `package.json`: an install-time script that fetches, decodes or spawns.
+///
+/// This is how every npm worm of 2025-26 runs - Shai-Hulud's `postinstall:
+/// node bundle.js`, its v2 `preinstall: node setup_bun.js`, the fake-interview
+/// packages' `postinstall` droppers. The script text is small and the shape is
+/// unmistakable, so it is worth a dedicated look rather than the generic matcher.
+fn scan_package_json(data: &[u8]) -> Vec<Hit> {
+    let text = String::from_utf8_lossy(data);
+    let mut hits = Vec::new();
+    for key in LIFECYCLE_KEYS {
+        for (at, value) in json_string_values(&text, key) {
+            let v = value.to_ascii_lowercase();
+            let line = data[..at.min(data.len())].iter().filter(|&&b| b == b'\n').count() + 1;
+            let mk = |ioc: &'static str, sev: Severity, why: &'static str| Hit { ioc, sev, why, start: at, end: at + value.len(), line };
+            if v.contains("bundle.js") || v.contains("setup_bun.js") || v.contains("bun_environment") {
+                hits.push(mk("shai-hulud-lifecycle", Severity::Critical, "install-time script runs the worm's bundle (Shai-Hulud shape)"));
+            } else if crate::persist::is_fetch_exec(value).is_some() {
+                hits.push(mk("lifecycle-fetch-exec", Severity::Critical, "install-time script downloads (or decodes) and executes code"));
+            } else if v.contains("node -e") || v.contains("node --eval") || v.contains("eval(") || v.contains("atob(")
+                || v.contains("base64") || v.contains("powershell") || v.contains("curl ") || v.contains("wget ")
+                || v.contains("child_process") || v.contains("bash -c") || v.contains("sh -c") || v.contains("certutil")
+                || v.contains("mshta") || v.contains("bitsadmin") || v.contains("| sh") || v.contains("|sh") {
+                hits.push(mk("lifecycle-script-suspicious", Severity::Suspicious, "install-time script spawns a shell, decodes data or evaluates code - look at it before installing"));
+            }
+        }
+    }
+    hits
+}
+
+/// GitHub Actions workflows that run untrusted pull-request code with secrets
+/// ("pwn request"), or fetch-and-execute in a step. Reported, never edited.
+fn scan_workflow(data: &[u8]) -> Vec<Hit> {
+    let text = String::from_utf8_lossy(data);
+    let mut hits = Vec::new();
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("pull_request_target") && lower.contains("actions/checkout") && lower.contains("github.event.pull_request.head") {
+        let at = lower.find("pull_request_target").unwrap_or(0);
+        hits.push(Hit { ioc: "workflow-pwn-request", sev: Severity::Suspicious, why: "pull_request_target + checkout of the PR head: a fork's code runs with this repo's secrets", start: at, end: at + 19, line: text[..at].matches('\n').count() + 1 });
+    }
+    let mut offset = 0usize;
+    for line in text.lines() {
+        if crate::persist::is_fetch_exec(line).is_some() {
+            hits.push(Hit { ioc: "workflow-fetch-exec", sev: Severity::Suspicious, why: "a workflow step downloads and executes code in one line", start: offset, end: offset + line.len(), line: text[..offset].matches('\n').count() + 1 });
+            break;
+        }
+        offset += line.len() + 1;
+    }
+    hits
+}
+
+fn is_workflow(path: &Path) -> bool {
+    let s = path.to_string_lossy().replace('\\', "/");
+    s.contains("/.github/workflows/") && (s.ends_with(".yml") || s.ends_with(".yaml"))
+}
+
+fn is_package_json(path: &Path) -> bool {
+    path.file_name().and_then(|s| s.to_str()) == Some("package.json")
+}
+
+/// Findings that need the file's *shape*, not just its bytes.
+fn structural_hits(path: &Path, data: &[u8]) -> Vec<Hit> {
+    if is_package_json(path) {
+        return scan_package_json(data);
+    }
+    if is_workflow(path) {
+        return scan_workflow(data);
+    }
+    Vec::new()
+}
+
 /// Apply file context to a raw hit list.
 ///
 /// Two adjustments the matcher cannot make on its own, because it only sees
@@ -632,6 +788,31 @@ fn refine(path: &Path, mut hits: Vec<Hit>) -> Vec<Hit> {
                 h.sev = Severity::Suspicious;
             }
         }
+    }
+
+    // Invisible Unicode is only camouflage where something will *execute* the
+    // file. In prose, JSON or a lockfile it is odd but not an infection.
+    let is_code = CODE_EXTS.contains(&ext.as_str());
+    for h in hits.iter_mut() {
+        if h.ioc == signatures::INVISIBLE_IOC && !is_code {
+            h.sev = Severity::Suspicious;
+        }
+    }
+
+    // The fake-interview backdoor's tell is the *pair*: a global keylogger and
+    // a screenshotter in the same manifest. Either alone has honest uses.
+    let has_key = hits.iter().any(|h| h.ioc == "keylogger-dep");
+    let has_shot = hits.iter().any(|h| h.ioc == "screenshot-dep");
+    if has_key && has_shot {
+        let at = hits.iter().find(|h| h.ioc == "keylogger-dep").map(|h| (h.start, h.line)).unwrap_or((0, 0));
+        hits.push(Hit {
+            ioc: "keylogger-kit",
+            sev: Severity::Critical,
+            why: "keystroke capture + screen capture in one package: the Contagious-Interview backdoor's toolkit",
+            start: at.0,
+            end: at.0,
+            line: at.1,
+        });
     }
 
     // Corroborating indicators only count in company. Outside a file PolinRider
@@ -769,6 +950,7 @@ pub fn scan_file(path: &Path) -> Option<Finding> {
     // was most of the cost of a sweep. Nothing needs suppressing until there is
     // a hit to suppress.
     let mut hits = refine(path, signatures::scan(&data));
+    hits.extend(structural_hits(path, &data));
     if !hits.is_empty() && is_exempt(&data) {
         return None;
     }
@@ -818,7 +1000,8 @@ pub fn scan_blob(name: &Path, data: &[u8]) -> Option<Finding> {
     if is_known_detector(name) || looks_binary(data) {
         return None;
     }
-    let hits = refine(name, signatures::scan(data));
+    let mut hits = refine(name, signatures::scan(data));
+    hits.extend(structural_hits(name, data));
     if !hits.is_empty() && is_exempt(data) {
         return None;
     }
@@ -895,18 +1078,72 @@ pub fn scan_tree_cb(root: &Path, quick: bool, on_finding: &mut dyn FnMut(Finding
 /// locations are small and are scanned explicitly, skip list or not, so `hunt`
 /// reaches the stage the ordinary walk steps over.
 pub fn scan_hideouts_cb(on_finding: &mut dyn FnMut(Finding)) {
-    let Some(local) = local_appdata() else { return };
-    let spots = [
-        local.join("Microsoft").join("CLR_v4.0"),
-        local
-            .join("Microsoft")
-            .join("Windows")
-            .join("Caches")
-            .join("cversions"),
+    let home = crate::config::user_home();
+    let mut spots: Vec<PathBuf> = vec![
+        // The npm-loader variant's drop sites (unix-style dirs, even on Windows).
+        home.join(".config").join("runtimedev-link"),
+        home.join(".local").join("share").join("runtimedev-link"),
     ];
+    if let Some(local) = local_appdata() {
+        spots.push(local.join("Microsoft").join("CLR_v4.0"));
+        spots.push(
+            local
+                .join("Microsoft")
+                .join("Windows")
+                .join("Caches")
+                .join("cversions"),
+        );
+    }
     for spot in spots {
         walk_unrestricted(&spot, on_finding);
     }
+    // Cached copies of malicious npm packages: `npx -y <pkg>` leaves the
+    // package under ~/.npm/_npx/<hash>/node_modules/<pkg>, and a global install
+    // puts it in the global modules dir. Both are outside every project tree
+    // and inside directories the walk skips, so they are named here.
+    for dir in cached_malicious_packages() {
+        on_finding(Finding {
+            path: dir,
+            hits: vec![Hit {
+                ioc: "malicious-package-cached",
+                sev: Severity::Critical,
+                why: "a known-malicious npm package sitting in a package cache, ready to be re-run",
+                start: 0,
+                end: 0,
+                line: 0,
+            }],
+            note: Some("directory of a malicious npm package; remove the whole directory".into()),
+        });
+    }
+}
+
+/// Directories of known-malicious npm packages in the npx cache and the global
+/// node_modules. Each entry is a directory, not a file.
+pub fn cached_malicious_packages() -> Vec<PathBuf> {
+    let home = crate::config::user_home();
+    let mut out = Vec::new();
+    let mut roots: Vec<PathBuf> = Vec::new();
+    // ~/.npm/_npx/<hash>/node_modules
+    if let Ok(entries) = std::fs::read_dir(home.join(".npm").join("_npx")) {
+        for e in entries.flatten() {
+            roots.push(e.path().join("node_modules"));
+        }
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        roots.push(PathBuf::from(appdata).join("npm").join("node_modules"));
+    }
+    roots.push(home.join(".npm-global").join("lib").join("node_modules"));
+    roots.push(PathBuf::from("/usr/local/lib/node_modules"));
+    roots.push(PathBuf::from("/usr/lib/node_modules"));
+    for r in roots {
+        for pkg in MALICIOUS_PACKAGES {
+            let p = r.join(pkg);
+            if p.is_dir() {
+                out.push(p);
+            }
+        }
+    }
+    out
 }
 
 /// %LOCALAPPDATA%, or the conventional path under the user profile.

@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod daemon;
+pub mod gitconfig;
 pub mod gitscan;
 pub mod healer;
 pub mod jsonbeacon;

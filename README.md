@@ -5,6 +5,15 @@
 Finds and removes the **PolinRider** supply-chain malware from developer machines
 and git repositories, then keeps watching so it cannot come back quietly.
 
+Since 1.1 it also covers the other developer-targeted campaigns of 2025–26 —
+the **Shai-Hulud** npm worm, **GlassWorm**'s invisible-Unicode payloads in editor
+extensions, the **npm-loader** (`runtimedev-link`) variant of the AppData
+campaign, **Contagious Interview** keylogger kits, injected **git config**
+(`core.fsmonitor`, hooks, nested bare repositories — "GitSpawn"), install-script
+droppers, pwn-request workflows and **ClickFix** run history — and it can repair
+a **poisoned remote branch** (`repos --fix`). The step-by-step is in
+[`docs/GUIDE.md`](docs/GUIDE.md).
+
 One binary. No runtime to install, no dependencies to audit - the whole thing is
 Rust standard library, on purpose.
 
@@ -248,7 +257,9 @@ uninstall              Stop the guard, remove the hooks.
 
 scan [paths...]        Report only. Exit 1 if anything critical.
 clean [paths...]       Scan, then remove payloads. --dry-run to preview.
-repos [paths...]       Fetch and audit every branch, local and remote-tracking.
+repos [paths...]       Fetch and audit every branch, local and remote-tracking,
+                       plus each repo's git config and hooks. --fix repairs a
+                       poisoned remote branch (see below).
 procs                  List hidden stage-2 processes. --kill stops them.
 protect / unprotect    Just the pre-commit hook.
 quarantine             List the originals kept aside.
@@ -331,8 +342,45 @@ It also checks for hidden stage-2 processes on every quick pass.
 
 **What it will not do.** The guard heals working trees. It never rewrites git
 history and it never pushes. An automated process that force-pushes to shared
-branches is a worse problem than the one it is solving, so `repos` reports what
-it finds on a branch and leaves the decision to you.
+branches is a worse problem than the one it is solving, so the *guard* only
+reports what it finds on a branch.
+
+### Repairing a poisoned remote: `repos --fix`
+
+The campaign's propagation step re-pushes the victim's own latest commit with
+the payload appended — same message, same author date — so the remote branch
+sits one rewritten commit "ahead" of the clean local one, and `git pull` would
+bring the infection down. `repos --fix` is the deliberate, human-invoked repair:
+
+```
+polinrider-hunter repos --fix --dry-run ~/work/repo   # print the exact push
+polinrider-hunter repos --fix ~/work/repo             # do it, then re-fetch and re-audit
+```
+
+It pushes the clean local branch with `git push --force-with-lease=<branch>:<audited sha>`
+so a concurrent push fails instead of being erased, and it refuses (**BLOCKED**,
+with the reason) unless a local branch tracks the remote one, that local branch
+is clean, and *every* commit the remote has beyond it touches an infected file.
+Real work on the remote is never discarded; you are told which commit to merge
+first. The end-to-end suite stands up a bare "origin", poisons it the way the
+campaign does, and proves the branch comes back byte-identical.
+
+## Beyond PolinRider: what else is covered
+
+| Campaign | Hides as | Detected by | Removed? |
+|---|---|---|---|
+| npm-loader (`runtimedev-link`) | Startup `.vbs` → `npx -y runtimedev-link --token <C2>`; `agent.env`; task XML | markers + drop-dir scan + npx-cache check | shim/Run key/task removed, files deleted, cached package dir deleted |
+| Shai-Hulud v1/v2 | `postinstall: node bundle.js`, `preinstall: setup_bun.js`, TruffleHog, `shai-hulud-workflow.yml` | lifecycle-script check, names | reported (JSON is never spliced) |
+| GlassWorm | thousands of invisible variation selectors on a "blank" line, `codePointAt - 0xE0100` decoder, Solana memo C2 | invisible-run structural check (any variant), decoder + RPC corroboration | the invisible line is cut; code around it kept |
+| Contagious Interview | `node-global-key-listener` + `screenshot-desktop`, folderOpen tasks | dependency pair | reported |
+| Git config injection / GitSpawn | `core.fsmonitor`, `core.pager`, `credential.helper !cmd`, filter drivers, hooks, nested `.git`/bare repos in the tree | `.git/config` + hooks + nested audit (in `scan`, `clean`, `hunt`, `repos`) | `core.fsmonitor` and fetch-and-run values unset; hooks and nested repos reported |
+| Install-script droppers | `curl \| sh`, `node -e`, base64 in `preinstall`/`postinstall` | fetch-and-execute shape | reported |
+| Pwn-request workflows | `pull_request_target` + checkout of the PR head | workflow check | reported |
+| ClickFix | `mshta`/`powershell -enc … \| iex` pasted into Win+R | Run-dialog history | reported as evidence |
+
+The Startup-folder sweep is content-based: a script is removed only when it
+names the fake NGEN path, `NativeImageGen`, the `Caches\cversions` drop dir, the
+npm loader or a C2 address. Your own launchers are never touched.
 
 Autostart is a plain text file you can read and delete:
 
@@ -380,7 +428,7 @@ for how it is wired and how to add macOS and Linux binaries.
 
 ```
 cargo build --release      # target/release/polinrider-hunter
-cargo test                 # 56 unit + 16 end-to-end tests
+cargo test                 # unit tests + tests/end_to_end.rs + tests/campaigns.rs
 ```
 
 The end-to-end suite in `tests/` is the one worth reading. It plants each real

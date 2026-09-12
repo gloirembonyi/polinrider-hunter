@@ -1,6 +1,7 @@
 //! Output. Human-readable by default, `--json` for anything downstream.
 
-use crate::gitscan::RefHit;
+use crate::gitconfig::ConfigHit;
+use crate::gitscan::{RefHit, RemotePlan};
 use crate::scanner::Finding;
 use crate::signatures::Severity;
 use crate::util::{self, BLUE, BOLD, DIM, GREEN, RED, YELLOW};
@@ -119,5 +120,66 @@ pub fn summary_line(found: usize, healed: usize) {
             found,
             healed
         );
+    }
+}
+
+pub fn print_config_hits(hits: &[ConfigHit], json: bool) {
+    if json {
+        println!("{{\"gitconfig\":[");
+        for (i, h) in hits.iter().enumerate() {
+            println!(
+                "  {{\"repo\":\"{}\",\"location\":\"{}\",\"key\":\"{}\",\"value\":\"{}\",\"severity\":\"{}\",\"fixable\":{},\"why\":\"{}\"}}{}",
+                util::json_escape(&h.repo.to_string_lossy()),
+                util::json_escape(&h.location.to_string_lossy()),
+                util::json_escape(&h.key),
+                util::json_escape(&h.value),
+                if h.sev == Severity::Critical { "critical" } else { "suspicious" },
+                h.fixable,
+                util::json_escape(h.why),
+                if i + 1 == hits.len() { "" } else { "," }
+            );
+        }
+        println!("]}}");
+        return;
+    }
+    for h in hits {
+        let tag = if h.sev == Severity::Critical { util::c(RED, "GITCONFIG") } else { util::c(YELLOW, "GITCONFIG") };
+        println!("{} {} {} = {}", tag, util::c(DIM, &h.repo.to_string_lossy()), util::c(BOLD, &h.key), h.value);
+        println!("    {} {}", util::c(DIM, &h.location.to_string_lossy()), util::c(DIM, h.why));
+    }
+}
+
+pub fn print_remote_plans(plans: &[RemotePlan], json: bool) {
+    if json {
+        println!("{{\"remote_fixes\":[");
+        for (i, p) in plans.iter().enumerate() {
+            println!(
+                "  {{\"repo\":\"{}\",\"remote\":\"{}\",\"branch\":\"{}\",\"local_ref\":\"{}\",\"remote_sha\":\"{}\",\"local_sha\":\"{}\",\"infected_files\":[{}],\"blocked\":{}}}{}",
+                util::json_escape(&p.repo.to_string_lossy()),
+                util::json_escape(&p.remote),
+                util::json_escape(&p.branch),
+                util::json_escape(&p.local_ref),
+                p.remote_sha,
+                p.local_sha,
+                p.infected_files.iter().map(|f| format!("\"{}\"", util::json_escape(f))).collect::<Vec<_>>().join(","),
+                match &p.blocked { Some(b) => format!("\"{}\"", util::json_escape(b)), None => "null".into() },
+                if i + 1 == plans.len() { "" } else { "," }
+            );
+        }
+        println!("]}}");
+        return;
+    }
+    for p in plans {
+        match &p.blocked {
+            None => {
+                println!("{} {} {}/{}", util::c(GREEN, "FIXABLE "), util::c(DIM, &p.repo.to_string_lossy()), p.remote, p.branch);
+                println!("    remote {} carries {} infected file(s); local {} is clean", &p.remote_sha[..p.remote_sha.len().min(10)], p.infected_files.len(), p.local_ref.trim_start_matches("refs/heads/"));
+                println!("    {}", util::c(DIM, &p.command()));
+            }
+            Some(b) => {
+                println!("{} {} {}/{}", util::c(YELLOW, "BLOCKED "), util::c(DIM, &p.repo.to_string_lossy()), p.remote, p.branch);
+                println!("    {}", b);
+            }
+        }
     }
 }

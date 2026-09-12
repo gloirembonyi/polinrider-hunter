@@ -33,6 +33,16 @@ pub enum Kind {
     /// folderOpen variant set it to "off" on purpose, and flagging that would
     /// punish exactly the right behaviour. Only `true` / `"on"` arms a task.
     AutoTasksEnabled,
+    /// A run of at least N consecutive *invisible* Unicode code points -
+    /// variation selectors (U+FE00-FE0F, U+E0100-E01EF), zero-width characters
+    /// (U+200B-200F, U+2060-2064), bidi controls (U+202A-202E, U+2066-2069),
+    /// Hangul fillers and a mid-file BOM.
+    ///
+    /// GlassWorm hides its payload this way: the bytes of the stage-1 loader are
+    /// encoded as thousands of variation selectors on a line that looks blank in
+    /// every editor and every diff, then decoded with `codePointAt` and `eval`ed.
+    /// One selector after an emoji is normal text; a dozen in a row is not.
+    InvisibleRun(usize),
     /// A run of at least N spaces/tabs followed by a non-whitespace byte.
     ///
     /// This is the variant-agnostic one. Every sample so far hides its payload
@@ -460,7 +470,92 @@ pub static IOCS: &[Ioc] = &[
         why: "refreshPersistence(): the AppData Node loader re-arming its own persistence",
         kind: Kind::Lit("refreshPersistence"),
     },
+    // ---- the npm-published loader the AppData campaign launches via `npx -y` --------
+    Ioc {
+        id: "npm-loader-runtimedev",
+        sev: Severity::Critical,
+        why: "runtimedev-link: malicious npm package the AppData loader starts with `npx -y ... --token <C2>|<hash>`",
+        kind: Kind::LitCi("runtimedev-link"),
+    },
+    Ioc {
+        id: "npm-loader-sstar-env",
+        sev: Severity::Critical,
+        why: "SSTAR_API_BASE: the environment the npm loader reads its C2 from (dropped as agent.env / agent.env.bat)",
+        kind: Kind::Lit("SSTAR_API_BASE"),
+    },
+    // ---- Shai-Hulud (self-propagating npm worm, 2025-2026) --------------------------
+    Ioc {
+        id: "shai-hulud",
+        sev: Severity::Critical,
+        why: "Shai-Hulud: the npm worm's own name (repo it creates, workflow it injects, bundle it ships)",
+        kind: Kind::LitCi("shai-hulud"),
+    },
+    Ioc {
+        id: "shai-hulud-truffler",
+        sev: Severity::Critical,
+        why: ".truffler-cache: where the worm caches TruffleHog to harvest secrets",
+        kind: Kind::LitCi(".truffler-cache"),
+    },
+    Ioc {
+        id: "shai-hulud-bun-env",
+        sev: Severity::Critical,
+        why: "bun_environment.js: Shai-Hulud v2 preinstall stage (bootstrapped by setup_bun.js)",
+        kind: Kind::Lit("bun_environment.js"),
+    },
+    Ioc {
+        id: "trufflehog",
+        sev: Severity::Suspicious,
+        why: "TruffleHog invoked from package code - a secret scanner is normal in CI, not in an install script",
+        kind: Kind::LitCi("trufflehog"),
+    },
+    Ioc {
+        id: "webhook-site",
+        sev: Severity::Suspicious,
+        why: "webhook.site exfiltration endpoint",
+        kind: Kind::LitCi("webhook.site"),
+    },
+    // ---- GlassWorm (VS Code / OpenVSX / GitHub, invisible Unicode + Solana C2) ------
+    Ioc {
+        id: "invisible-unicode",
+        sev: Severity::Critical,
+        why: "a run of invisible Unicode code points (variation selectors / zero-width) hiding code from the editor and the diff",
+        kind: Kind::InvisibleRun(12),
+    },
+    Ioc {
+        id: "glassworm-decoder",
+        sev: Severity::Suspicious,
+        why: "0xE0100: the variation-selector base GlassWorm's decoder subtracts to recover payload bytes",
+        kind: Kind::LitCi("0xe0100"),
+    },
+    Ioc {
+        id: "solana-c2-memo",
+        sev: Severity::Suspicious,
+        why: "getSignaturesForAddress: reading a Solana wallet's transaction memos (GlassWorm's C2 dead drop)",
+        kind: Kind::Lit("getSignaturesForAddress"),
+    },
+    Ioc {
+        id: "solana-rpc",
+        sev: Severity::Suspicious,
+        why: "public Solana RPC endpoint",
+        kind: Kind::LitCi("api.mainnet-beta.solana.com"),
+    },
+    // ---- Contagious Interview / BeaverTail (fake job-interview repos) --------------
+    Ioc {
+        id: "keylogger-dep",
+        sev: Severity::Suspicious,
+        why: "node-global-key-listener: system-wide keystroke capture (the backdoor's keylogger)",
+        kind: Kind::Lit("node-global-key-listener"),
+    },
+    Ioc {
+        id: "screenshot-dep",
+        sev: Severity::Suspicious,
+        why: "screenshot-desktop: periodic screen capture (paired with the keylogger in the backdoor)",
+        kind: Kind::Lit("screenshot-desktop"),
+    },
 ];
+
+/// Invisible-Unicode structural indicator (GlassWorm).
+pub const INVISIBLE_IOC: &str = "invisible-unicode";
 
 /// An extended-regex approximation of the critical set, for `git grep`.
 ///
@@ -488,6 +583,9 @@ pub const GIT_GREP_ERE: &str = concat!(
     "|clr_init\\.vbs",
     "|194\\.11\\.226\\.41",
     "|193\\.247\\.144\\.38",
+    "|[Ss]hai-[Hh]ulud|truffler-cache|bun_environment\\.js",
+    "|[Rr]untimedev-link|SSTAR_API_BASE",
+    "|node-global-key-listener|getSignaturesForAddress",
     "|( {200,}|\t{200,})[^[:space:]]",
 );
 
@@ -518,6 +616,13 @@ pub const CORROBORATING: &[&str] = &[
     "rpc-aptos",
     "rpc-bsc",
     "rpc-bsc-2",
+    // Shai-Hulud / GlassWorm context: a secret scanner, an exfil host, a Solana
+    // RPC or the decoder's constant all have honest uses on their own.
+    "trufflehog",
+    "webhook-site",
+    "glassworm-decoder",
+    "solana-c2-memo",
+    "solana-rpc",
     // On its own, "refreshPersistence" is a name an honest program could use.
     // It earns its keep only beside the obfuscation the loader ships with.
     "node-loader-refresh",
@@ -608,22 +713,33 @@ fn scan_inner(data: &[u8], stop_early: bool) -> Vec<Hit> {
         line: 0,
     };
 
-    // Structural check, one pass of its own.
+    // Structural checks, one pass each of their own.
     for (k, ioc) in IOCS.iter().enumerate() {
-        if let Kind::Padding(n) = ioc.kind {
-            if let Some((s, e)) = find_padding(data, n) {
-                hits.push(hit_of(k, s, e));
-                if stop_early && ioc.sev == Severity::Critical {
-                    return hits;
+        match ioc.kind {
+            Kind::Padding(n) => {
+                if let Some((s, e)) = find_padding(data, n) {
+                    hits.push(hit_of(k, s, e));
+                    if stop_early && ioc.sev == Severity::Critical {
+                        return hits;
+                    }
                 }
             }
+            Kind::InvisibleRun(n) => {
+                if let Some((s, e)) = find_invisible_run(data, n) {
+                    hits.push(hit_of(k, s, e));
+                    if stop_early && ioc.sev == Severity::Critical {
+                        return hits;
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
     // Everything else, one pass.
     let buckets = index();
-    let mut done = [false; 64];
-    debug_assert!(IOCS.len() <= 64);
+    let mut done = [false; 128];
+    debug_assert!(IOCS.len() <= 128);
     for i in 0..data.len() {
         let bucket = &buckets[data[i] as usize];
         if bucket.is_empty() {
@@ -681,6 +797,8 @@ fn first_bytes(kind: Kind) -> Vec<u8> {
         Kind::AutoTasksEnabled => vec![b'a'],
         // Starts on a space or tab; given its own pass instead.
         Kind::Padding(_) => vec![],
+        // Multi-byte; given its own pass instead.
+        Kind::InvisibleRun(_) => vec![],
     }
 }
 
@@ -753,7 +871,91 @@ fn match_at(data: &[u8], i: usize, kind: Kind) -> Option<(usize, usize)> {
             }
         }
         Kind::Padding(_) => None,
+        Kind::InvisibleRun(_) => None,
     }
+}
+
+/// Length in bytes of the invisible code point encoded at `data[i..]`, or 0.
+///
+/// Byte-level on purpose (like everything else here): the file may not be valid
+/// UTF-8 elsewhere, and the healer needs exact byte offsets.
+fn invisible_len_at(data: &[u8], i: usize) -> usize {
+    let b0 = data[i];
+    let b = |k: usize| data.get(i + k).copied().unwrap_or(0);
+    match b0 {
+        // U+200B..U+200F zero-width space/non-joiner/joiner/LRM/RLM;
+        // U+202A..U+202E bidi embeddings and overrides (Trojan Source);
+        // U+2060..U+2064 word joiner & invisible operators;
+        // U+2066..U+2069 bidi isolates.
+        0xE2 => {
+            let (b1, b2) = (b(1), b(2));
+            if b1 == 0x80 && ((0x8B..=0x8F).contains(&b2) || (0xAA..=0xAE).contains(&b2)) {
+                3
+            } else if b1 == 0x81 && ((0xA0..=0xA4).contains(&b2) || (0xA6..=0xA9).contains(&b2)) {
+                3
+            } else {
+                0
+            }
+        }
+        // U+FE00..U+FE0F variation selectors; U+FEFF BOM when not at offset 0.
+        0xEF => {
+            let (b1, b2) = (b(1), b(2));
+            if b1 == 0xB8 && (0x80..=0x8F).contains(&b2) {
+                3
+            } else if i > 0 && b1 == 0xBB && b2 == 0xBF {
+                3
+            } else {
+                0
+            }
+        }
+        // U+E0100..U+E01EF variation selectors supplement: F3 A0 84 80 .. F3 A0 87 AF.
+        0xF3 => {
+            let (b1, b2, b3) = (b(1), b(2), b(3));
+            if b1 == 0xA0 && (0x84..=0x87).contains(&b2) && (0x80..=0xBF).contains(&b3) {
+                if b2 == 0x87 && b3 > 0xAF {
+                    0
+                } else {
+                    4
+                }
+            } else {
+                0
+            }
+        }
+        // U+3164 Hangul filler.
+        0xE3 => if b(1) == 0x85 && b(2) == 0xA4 { 3 } else { 0 },
+        // U+115F / U+1160 Hangul choseong/jungseong fillers.
+        0xE1 => if b(1) == 0x85 && (b(2) == 0x9F || b(2) == 0xA0) { 3 } else { 0 },
+        _ => 0,
+    }
+}
+
+/// A run of at least `min` consecutive invisible code points.
+///
+/// Returns the byte span of the run. Emoji sequences (a joiner between two
+/// visible pictographs, one VS16 after a symbol) never come close to `min`.
+fn find_invisible_run(data: &[u8], min: usize) -> Option<(usize, usize)> {
+    let mut i = 0usize;
+    while i < data.len() {
+        let n = invisible_len_at(data, i);
+        if n == 0 {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut count = 0usize;
+        while i < data.len() {
+            let m = invisible_len_at(data, i);
+            if m == 0 {
+                break;
+            }
+            i += m;
+            count += 1;
+        }
+        if count >= min {
+            return Some((start, i));
+        }
+    }
+    None
 }
 
 fn find_lit(hay: &[u8], needle: &[u8]) -> Option<usize> {

@@ -1,6 +1,6 @@
 [package]
 name = "polinrider-hunter"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "Detects and removes the PolinRider supply-chain malware from developer machines and git repositories."
 license = "MIT"

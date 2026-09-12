@@ -7,8 +7,8 @@
 use std::path::PathBuf;
 
 use polinrider_hunter::{
-    config, daemon, gitscan, healer, monitor, notify, persist, procscan, report, scanner,
-    service, util, winpersist,
+    config, daemon, gitconfig, gitscan, healer, monitor, notify, persist, procscan, report,
+    scanner, service, util, winpersist,
 };
 
 use config::Config;
@@ -288,12 +288,58 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
     }
 
     // 4. The AppData hideouts the walk above deliberately skips (the fake
-    //    Microsoft\CLR_v4.0 stage). Small and specific, scanned last.
+    //    Microsoft\CLR_v4.0 stage, the npm loader's drop dirs, package caches).
+    //    Small and specific, scanned last.
     if !json {
-        println!("{}", util::c(DIM, "    scanning known AppData hideouts"));
+        println!("{}", util::c(DIM, "    scanning known hideouts and package caches"));
     }
     scanner::scan_hideouts_cb(&mut handle);
     drop(handle);
+
+    // 4b. Cached malicious npm packages are directories; the healer works on
+    //     files, so they are removed here.
+    for dir in scanner::cached_malicious_packages() {
+        if dry {
+            if !json { println!("  {} {}", util::c(YELLOW, "would remove"), dir.display()); }
+            continue;
+        }
+        let ok = std::fs::remove_dir_all(&dir).is_ok();
+        if ok { healed += 1; } else { manual.push(format!("{} - could not remove the package directory", dir.display())); }
+        if !json {
+            let colour = if ok { GREEN } else { RED };
+            let verb = if ok { "removed  " } else { "FAILED   " };
+            println!("  {} {}", util::c(colour, verb), dir.display());
+        }
+    }
+
+    // 5. Every repository's own git config: an injected core.fsmonitor or a
+    //    hook that fetches and runs code survives a perfectly clean work tree.
+    if !json {
+        println!("{}", util::c(DIM, "    auditing git configuration of every repository"));
+    }
+    let cfg_hits = audit_repo_configs(&roots);
+    let mut cfg_fixed = 0usize;
+    if !cfg_hits.is_empty() {
+        if !json {
+            report::print_config_hits(&cfg_hits, false);
+        }
+        cfg_fixed = fix_repo_configs(&cfg_hits, dry, json);
+        for h in &cfg_hits {
+            if !h.fixable && h.sev == polinrider_hunter::signatures::Severity::Critical {
+                manual.push(format!("{} :: {} - {}", h.location.display(), h.key, h.why));
+            }
+        }
+    }
+    healed += cfg_fixed;
+
+    // 6. Evidence of a ClickFix / fake-CAPTCHA command having been run.
+    let clickfix = winpersist::clickfix_history();
+    for c in &clickfix {
+        manual.push(format!("Run-dialog history holds a fetch-and-execute command (ClickFix): {c}"));
+        if !json {
+            println!("  {} {}", util::c(YELLOW, "clickfix "), c);
+        }
+    }
 
     if json {
         println!(
@@ -378,11 +424,64 @@ fn cmd_scan(args: &Args, cfg: &Config, json: bool) -> i32 {
     }
     let findings = scanner::scan_paths(&paths, args.has("--quick"));
     report::print_findings(&findings, json);
-    if findings.iter().any(|f| f.is_critical()) {
+    let cfg_hits = audit_repo_configs(&paths);
+    if !cfg_hits.is_empty() {
+        if !json {
+            println!();
+        }
+        report::print_config_hits(&cfg_hits, json);
+    }
+    let crit_cfg = cfg_hits.iter().any(|h| h.sev == polinrider_hunter::signatures::Severity::Critical);
+    if findings.iter().any(|f| f.is_critical()) || crit_cfg {
         1
     } else {
         0
     }
+}
+
+/// Every repository at or under `paths`, audited for executable git config.
+fn audit_repo_configs(paths: &[PathBuf]) -> Vec<gitconfig::ConfigHit> {
+    let mut repos: Vec<PathBuf> = Vec::new();
+    for p in paths {
+        if gitscan::is_repo(p) {
+            if let Some(root) = gitscan::repo_root(p) {
+                if !repos.contains(&root) {
+                    repos.push(root);
+                }
+            }
+        } else {
+            for r in config::discover_repos_under(&[p.clone()], 6) {
+                if !repos.contains(&r) {
+                    repos.push(r);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for r in repos {
+        out.extend(gitconfig::audit(&r));
+    }
+    out
+}
+
+/// Fix what can be fixed in the config hits; print what happened.
+fn fix_repo_configs(hits: &[gitconfig::ConfigHit], dry: bool, json: bool) -> usize {
+    let mut fixed = 0usize;
+    for h in hits {
+        if !h.fixable {
+            continue;
+        }
+        let ok = gitconfig::fix(h, dry);
+        if ok {
+            fixed += 1;
+        }
+        if !json {
+            let colour = if ok { GREEN } else { RED };
+            let verb = if dry { "would unset" } else if ok { "unset    " } else { "FAILED   " };
+            println!("  {} {} {} (in {})", util::c(colour, verb), h.key, util::c(DIM, &h.value), h.location.display());
+        }
+    }
+    fixed
 }
 
 fn cmd_clean(args: &Args, cfg: &Config, json: bool) -> i32 {
@@ -392,11 +491,18 @@ fn cmd_clean(args: &Args, cfg: &Config, json: bool) -> i32 {
     }
     let dry = args.has("--dry-run");
     let findings = scanner::scan_paths(&paths, false);
-    if findings.is_empty() {
+    let cfg_hits = audit_repo_configs(&paths);
+    if findings.is_empty() && cfg_hits.is_empty() {
         println!("{}", util::c(GREEN, "Nothing to clean."));
         return 0;
     }
     report::print_findings(&findings, json);
+    if !cfg_hits.is_empty() {
+        println!();
+        report::print_config_hits(&cfg_hits, json);
+        println!();
+        fix_repo_configs(&cfg_hits, dry, json);
+    }
     println!();
 
     let mut healed = 0usize;
@@ -461,18 +567,81 @@ fn cmd_repos(args: &Args, cfg: &Config, json: bool) -> i32 {
         all.extend(gitscan::scan_repo(p, do_fetch));
     }
     report::print_ref_hits(&all, json);
+
+    // Repository configuration is part of the audit too: an injected
+    // core.fsmonitor or a hook that curls into sh is how a clean-looking clone
+    // still runs attacker code.
+    let mut cfg_hits = Vec::new();
+    for p in &paths {
+        if gitscan::is_repo(p) {
+            cfg_hits.extend(gitconfig::audit(p));
+        }
+    }
+    if !cfg_hits.is_empty() {
+        if !json {
+            println!();
+        }
+        report::print_config_hits(&cfg_hits, json);
+    }
+
+    let fix = args.has("--fix");
+    let dry = args.has("--dry-run");
+    let mut plans: Vec<gitscan::RemotePlan> = Vec::new();
+    for p in &paths {
+        if gitscan::is_repo(p) {
+            plans.extend(gitscan::plan_remote_fixes(p, &all));
+        }
+    }
+    let mut unresolved = all.len();
+    if !plans.is_empty() {
+        if !json {
+            println!();
+            println!("{}", util::c(BOLD, if fix { "repairing remote branches" } else { "remote branches that could be repaired with --fix" }));
+        }
+        report::print_remote_plans(&plans, json);
+        if fix {
+            if !json {
+                println!();
+            }
+            for plan in &plans {
+                match gitscan::apply_remote_fix(plan, dry) {
+                    Ok(msg) => {
+                        if !dry {
+                            unresolved = unresolved.saturating_sub(plan.infected_files.len());
+                        }
+                        if !json {
+                            let verb = if dry { "dry-run " } else { "repaired" };
+                            println!("  {} {}", util::c(GREEN, verb), msg);
+                        }
+                    }
+                    Err(e) => {
+                        if !json {
+                            println!("  {} {}/{}: {}", util::c(RED, "not done"), plan.remote, plan.branch, e);
+                        }
+                    }
+                }
+            }
+        }
+    }
     if !json && !all.is_empty() {
         println!();
-        println!(
-            "{}",
-            util::c(
-                YELLOW,
-                "These are branch contents, not your working tree. Cleaning them means\n\
-                 committing a fix on each branch - deliberately not automated. See README."
-            )
-        );
+        if fix && !dry {
+            println!("{}", util::c(DIM, "Repaired branches were re-fetched and re-audited. Anything still listed above needs a hand: see docs/GUIDE.md."));
+        } else {
+            println!(
+                "{}",
+                util::c(
+                    YELLOW,
+                    "These are branch contents, not your working tree. `repos --fix` pushes your clean\n\
+                     local branch over a poisoned remote branch (with --force-with-lease, and only when\n\
+                     every extra remote commit IS the infection). Add --dry-run to preview."
+                )
+            );
+        }
     }
-    if all.is_empty() {
+    if all.is_empty() && cfg_hits.iter().all(|h| h.sev != polinrider_hunter::signatures::Severity::Critical) {
+        0
+    } else if fix && !dry && unresolved == 0 {
         0
     } else {
         1
@@ -631,9 +800,26 @@ fn cmd_persistence() -> i32 {
     );
     let hits = persist::check();
     println!();
-    if hits.is_empty() {
+    // What `hunt` would remove outright: Run keys, tasks and Startup shims that
+    // provably launch the campaign.
+    let removable = winpersist::sweep(true);
+    for a in &removable {
+        println!("{} {} {}", util::c(RED, "REMOVABLE"), a.kind, util::c(BOLD, &a.name));
+        println!("    {}", util::c(DIM, &a.target));
+        println!("    {}", util::c(DIM, "`polinrider-hunter hunt` removes this (original quarantined)"));
+    }
+    let clickfix = winpersist::clickfix_history();
+    for c in &clickfix {
+        println!("{} {}", util::c(YELLOW, "CLICKFIX "), util::c(BOLD, "Run dialog history"));
+        println!("    {}", c);
+        println!("    {}", util::c(DIM, "a fetch-and-execute command was pasted into Win+R - a fake CAPTCHA was likely followed"));
+    }
+    if hits.is_empty() && removable.is_empty() && clickfix.is_empty() {
         println!("{}", util::c(GREEN, "Nothing suspicious in any startup location."));
         return 0;
+    }
+    if hits.is_empty() {
+        return 1;
     }
     for h in &hits {
         println!(
@@ -1211,7 +1397,9 @@ Detects and removes the PolinRider supply-chain malware.
   scan [paths...]        Report indicators; change nothing. Exit 1 if infected.
   clean [paths...]       Scan, then remove payloads. Originals are quarantined.
   repos [paths...]       Fetch and audit every branch of each repo, local and
-                         remote-tracking, without pulling or checking out.
+                         remote-tracking, without pulling or checking out; also
+                         audits each repo's git config and hooks. --fix pushes
+                         your clean local branch over a poisoned remote branch.
   procs                  List hidden stage-2 processes. --kill stops them.
   persistence            Check shell profiles, cron and login agents for a
                          way back in. Reports only; never edits them.
@@ -1224,6 +1412,8 @@ Detects and removes the PolinRider supply-chain malware.
   --dry-run              clean: report what would change, write nothing.
   --quick                scan: only the filenames PolinRider targets.
   --no-fetch             repos: audit refs as they are, do not contact remotes.
+  --fix                  repos: repair infected remote branches (force-with-lease
+                         push of the clean local branch; --dry-run to preview).
   --kill                 procs: stop what is found.
   --drives               hunt: search every drive, not just your home directory.
   --interval <secs>      install: seconds between quick passes (default 30).
@@ -1236,7 +1426,11 @@ Detects and removes the PolinRider supply-chain malware.
 {b}NOTES{r}
   Healing never rewrites line endings, so a fix stays a one-line diff.
   The guard heals working trees only. It never rewrites git history and never
-  pushes; `repos` reports what is on a branch and leaves the decision to you.
+  pushes on its own; `repos` reports what is on a branch, and only `repos --fix`,
+  run by you, pushes - and only when every extra remote commit is the infection.
+  Also covered: Shai-Hulud npm worm, GlassWorm invisible-Unicode payloads, npm
+  install-script droppers, Contagious-Interview keylogger kits, injected git
+  config (core.fsmonitor, hooks, nested repos), ClickFix run history.
 "#
     );
 }
