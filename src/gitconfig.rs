@@ -206,7 +206,15 @@ fn audit_hooks(repo: &Path, dir: &Path, out: &mut Vec<ConfigHit>) {
         }
         let Ok(data) = std::fs::read(&p) else { continue };
         let text = String::from_utf8_lossy(&data);
-        if text.contains("polinrider-hunter") || text.contains(scanner::DETECTOR_MARKER) {
+        // A repository's *defensive* hook quotes the very strings we hunt for -
+        // that is what a gate is. The old check here only recognised our own
+        // name, so every hand-written anti-PolinRider pre-commit hook (and the
+        // one this project ships) was reported as Critical malware, in the one
+        // place a maintainer is least able to shrug it off. Use the same
+        // exemption the file scanner uses: the explicit marker, a known
+        // detector filename (`pre-commit`, `check-malware.*`), or content that
+        // carries two independent scanner idioms.
+        if scanner::is_exempt(&data) || scanner::is_known_detector(&p) {
             continue;
         }
         let mut why: Option<&'static str> = None;

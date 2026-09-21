@@ -522,7 +522,7 @@ fn scan_gitignore(path: &Path, data: &[u8]) -> Option<Finding> {
     })
 }
 
-fn is_known_detector(path: &Path) -> bool {
+pub fn is_known_detector(path: &Path) -> bool {
     path.file_name()
         .and_then(|s| s.to_str())
         .map(|n| KNOWN_DETECTORS.contains(&n))
@@ -606,7 +606,7 @@ const DETECTOR_IDIOMS: &[&str] = &[
 
 /// Is this content exempt from reporting - a declared detector, or a scanner
 /// whose own pattern strings tripped the matcher?
-fn is_exempt(data: &[u8]) -> bool {
+pub fn is_exempt(data: &[u8]) -> bool {
     crate::signatures::contains_marker(data, DETECTOR_MARKER) || looks_like_detector_logic(data)
 }
 

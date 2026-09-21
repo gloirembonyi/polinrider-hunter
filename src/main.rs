@@ -713,6 +713,26 @@ fn cmd_repos(args: &Args, cfg: &Config, json: bool) -> i32 {
     }
     report::print_ref_hits(&all, json);
 
+    // Ref tips answer "what would run if I checked this out". They do not
+    // answer "what is still in this repository": cleaning a branch leaves every
+    // earlier copy of the payload in the object database, reachable by object
+    // id for anyone who has the repo. --history walks every blob instead.
+    let mut hist: Vec<gitscan::HistoryHit> = Vec::new();
+    if args.has("--history") {
+        for p in &paths {
+            if gitscan::is_repo(p) {
+                if !json {
+                    println!("{} {}", util::c(DIM, "walking history of"), p.display());
+                }
+                hist.extend(gitscan::scan_history(p, do_fetch));
+            }
+        }
+        if !json {
+            println!();
+        }
+        report::print_history_hits(&hist, json);
+    }
+
     // Repository configuration is part of the audit too: an injected
     // core.fsmonitor or a hook that curls into sh is how a clean-looking clone
     // still runs attacker code.
@@ -729,6 +749,7 @@ fn cmd_repos(args: &Args, cfg: &Config, json: bool) -> i32 {
         report::print_config_hits(&cfg_hits, json);
     }
 
+    let history_found = !hist.is_empty();
     let fix = args.has("--fix");
     let dry = args.has("--dry-run");
     let mut plans: Vec<gitscan::RemotePlan> = Vec::new();
@@ -783,6 +804,11 @@ fn cmd_repos(args: &Args, cfg: &Config, json: bool) -> i32 {
                 )
             );
         }
+    }
+    if history_found {
+        // A payload still in the object database is a finding even when every
+        // tip is clean, so this cannot exit 0 just because --fix succeeded.
+        return 1;
     }
     if all.is_empty() && cfg_hits.iter().all(|h| h.sev != polinrider_hunter::signatures::Severity::Critical) {
         0
@@ -1557,7 +1583,8 @@ Detects and removes the PolinRider supply-chain malware.
   repos [paths...]       Fetch and audit every branch of each repo, local and
                          remote-tracking, without pulling or checking out; also
                          audits each repo's git config and hooks. --fix pushes
-                         your clean local branch over a poisoned remote branch.
+                         your clean local branch over a poisoned remote branch;
+                         --history also audits old commits, not just the tips.
   procs                  List hidden stage-2 processes. --kill stops them.
   persistence            Check shell profiles, cron and login agents for a
                          way back in. Reports only; never edits them.
@@ -1570,6 +1597,10 @@ Detects and removes the PolinRider supply-chain malware.
   --dry-run              clean: report what would change, write nothing.
   --quick                scan: only the filenames PolinRider targets.
   --no-fetch             repos: audit refs as they are, do not contact remotes.
+  --history              repos: also walk every blob reachable from any ref, not
+                         just the tips - finds payloads left in old commits after
+                         a branch was cleaned. Prints the `git filter-repo`
+                         command that purges them.
   --fix                  repos: repair infected remote branches (force-with-lease
                          push of the clean local branch; --dry-run to preview).
   --kill                 procs: stop what is found.

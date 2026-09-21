@@ -271,13 +271,14 @@ scan [paths...]        Report only. Exit 1 if anything critical.
 clean [paths...]       Scan, then remove payloads. --dry-run to preview.
 repos [paths...]       Fetch and audit every branch, local and remote-tracking,
                        plus each repo's git config and hooks. --fix repairs a
-                       poisoned remote branch (see below).
+                       poisoned remote branch (see below); --history audits
+                       old commits too, not just the tips.
 procs                  List hidden stage-2 processes. --kill stops them.
 protect / unprotect    Just the pre-commit hook.
 quarantine             List the originals kept aside.
 ```
 
-Flags: `--json`, `--dry-run`, `--quick`, `--no-fetch`, `--kill`, `--drives`,
+Flags: `--json`, `--dry-run`, `--quick`, `--no-fetch`, `--history`, `--kill`, `--drives`,
 `--interval <secs>`, `--no-autostart`, `--no-color`.
 
 ### Getting it off the machine entirely
@@ -376,6 +377,49 @@ is clean, and *every* commit the remote has beyond it touches an infected file.
 Real work on the remote is never discarded; you are told which commit to merge
 first. The end-to-end suite stands up a bare "origin", poisons it the way the
 campaign does, and proves the branch comes back byte-identical.
+
+A merge commit used to defeat the planner. It asked `git diff-tree` what each
+divergent commit changed, and `diff-tree` prints nothing for a merge unless it
+is given `-m`/`--cc` - so a branch whose extra history contained a merge looked
+like it touched no files, failed the "does this touch the infection?" test, and
+was refused with the self-contradicting reason *"changes 0 file(s) that are not
+part of the infection"*. That is the common case, not a corner: a campaign that
+re-pushes through a pull request produces exactly that shape. The planner now
+asks what the remote's extra history changes as a whole (`local...remote`) and
+requires every file in it to be an infected one - merge-correct, and stricter
+than the old per-commit test, which passed a commit that touched one infected
+file and fifty real ones.
+
+### A clean tip is not a clean repository: `repos --history`
+
+`repos` audits ref **tips**, which answers *"what would run if I checked this
+out"*. It does not answer *"is the payload still in here"*. Healing a config and
+committing the fix leaves the poisoned blob in the object database, reachable by
+`git show`, by checking out the old commit, and - once pushed - by anyone who
+can read the repository.
+
+```
+polinrider-hunter repos --history ~/work/repo
+```
+
+This walks every blob reachable from any ref, not just the tips, reading them
+through a single `git cat-file --batch` (one child process, not one per object)
+and running the real matcher on the bytes - so the detector exemption applies
+and a repository's own `check-malware.mjs` is not mistaken for the thing it
+hunts. Lockfiles and `node_modules` are skipped.
+
+Each finding is reported with its object id, the path it was stored at, its
+indicators and the commits that still hold it. The blob ids are written to a
+file in the state directory and the `git filter-repo` command that purges them
+is printed. Purging rewrites every commit id, so everyone has to re-clone, and
+GitHub keeps unreachable objects until its own GC - it is a deliberate
+operation, which is why the tool prints the command instead of running it.
+
+On the three repositories this was built for, every tip audited clean while
+**thirteen** payload blobs were still in history: three `src/main.ts` droppers
+and a committed `.env`, four `eslint.config.mjs` in the backend, four
+`tailwind.config.js` in the mobile app and one `eslint.config.mjs` in the
+dashboard. Nothing had reported them, because nothing looked.
 
 ## Beyond PolinRider: what else is covered
 

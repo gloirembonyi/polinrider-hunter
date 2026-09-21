@@ -227,6 +227,165 @@ fn infected_files_on(repo: &Path, git_ref: &str) -> Vec<String> {
     out
 }
 
+/// One payload blob still reachable somewhere in history.
+#[derive(Debug, Clone)]
+pub struct HistoryHit {
+    pub repo: PathBuf,
+    /// Blob object id. This is what `git filter-repo --strip-blobs-with-ids` takes.
+    pub blob: String,
+    /// A path the blob was stored at. The same bytes can appear at several
+    /// paths; one is enough to recognise it.
+    pub path: String,
+    pub size: u64,
+    pub iocs: Vec<String>,
+}
+
+/// Audit every blob reachable from any ref, not just the ref tips.
+///
+/// `scan_repo` answers "is there malware on this branch *now*", which is the
+/// question that matters for anything that might execute. It is not the same
+/// question as "is there malware in this repository". Cleaning a branch tip
+/// leaves every earlier version of the poisoned file sitting in the object
+/// database, reachable by checking out an old commit, by `git show`, and -
+/// once pushed - by anyone with the object id. On the repositories this tool
+/// was written for, the tips audited clean while seven payload blobs, three of
+/// them a dropper in `src/main.ts` and one a committed `.env`, were still
+/// there. Nothing reported them, because nothing looked.
+///
+/// Every blob is read through a single `git cat-file --batch`, so this costs
+/// one child process rather than one per object, and the real matcher runs on
+/// the bytes - which means the detector exemption applies and a repository's
+/// own `check-malware.mjs` is not mistaken for the thing it hunts.
+pub fn scan_history(repo: &Path, do_fetch: bool) -> Vec<HistoryHit> {
+    if !is_repo(repo) {
+        return Vec::new();
+    }
+    if do_fetch {
+        fetch(repo);
+    }
+    // `<sha> <path>` for every object reachable from any ref; trees and commits
+    // come through with no path and are dropped by the type check below.
+    let listing = util::git(repo, &["rev-list", "--objects", "--all"]);
+    let mut want: Vec<(String, String)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for line in listing.stdout.lines() {
+        let line = line.trim_end();
+        let Some((sha, path)) = line.split_once(' ') else { continue };
+        if sha.len() < 40 || path.is_empty() || !seen.insert(sha.to_string()) {
+            continue;
+        }
+        if is_noise_path(path) {
+            continue;
+        }
+        want.push((sha.to_string(), path.to_string()));
+    }
+    if want.is_empty() {
+        return Vec::new();
+    }
+    let by_sha: std::collections::HashMap<&str, &str> =
+        want.iter().map(|(s, p)| (s.as_str(), p.as_str())).collect();
+    let mut out = Vec::new();
+    for (sha, kind, data) in batch_cat_file(repo, want.iter().map(|(s, _)| s.as_str())) {
+        if kind != "blob" || data.is_empty() {
+            continue;
+        }
+        if !crate::signatures::has_critical(&data) || scanner::is_exempt(&data) {
+            continue;
+        }
+        let path = by_sha.get(sha.as_str()).copied().unwrap_or("").to_string();
+        let mut iocs: Vec<String> = crate::signatures::scan(&data).into_iter().map(|h| h.ioc.to_string()).collect();
+        iocs.dedup();
+        out.push(HistoryHit { repo: repo.to_path_buf(), size: data.len() as u64, blob: sha, path, iocs });
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path).then(a.blob.cmp(&b.blob)));
+    out
+}
+
+/// Paths whose contents are never worth a full match: dependency lockfiles and
+/// vendored trees, which are large, minified, and dominate the object count.
+fn is_noise_path(path: &str) -> bool {
+    path.contains("node_modules/")
+        || path.ends_with("package-lock.json")
+        || path.ends_with("yarn.lock")
+        || path.ends_with("pnpm-lock.yaml")
+}
+
+/// Read many objects through one `git cat-file --batch`.
+///
+/// The batch protocol is `<sha> <type> <size>\n<size bytes>\n` per record, so
+/// the payload is read by length and never by line - blobs are arbitrary bytes
+/// and frequently are not UTF-8. Stdin is fed from its own thread: git starts
+/// answering long before the request list is finished, and writing it all up
+/// front would deadlock on a full pipe as soon as a repository is big enough to
+/// matter.
+fn batch_cat_file<'a>(repo: &Path, shas: impl Iterator<Item = &'a str>) -> Vec<(String, String, Vec<u8>)> {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::process::{Command, Stdio};
+
+    let Some(dir) = repo.to_str() else { return Vec::new() };
+    let mut cmd = Command::new("git");
+    cmd.args(["-C", dir, "cat-file", "--batch"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let Ok(mut child) = cmd.spawn() else { return Vec::new() };
+    let Some(mut stdin) = child.stdin.take() else { return Vec::new() };
+    let request: Vec<String> = shas.map(str::to_string).collect();
+    let writer = std::thread::spawn(move || {
+        for sha in request {
+            if writeln!(stdin, "{sha}").is_err() {
+                return;
+            }
+        }
+        let _ = stdin.flush();
+        // Dropping stdin closes it, which is what ends the batch.
+    });
+
+    let mut out = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        let mut r = BufReader::new(stdout);
+        let mut header = String::new();
+        loop {
+            header.clear();
+            match r.read_line(&mut header) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let head = header.trim_end();
+            if head.is_empty() {
+                continue;
+            }
+            let mut parts = head.split(' ');
+            let (Some(sha), Some(kind), Some(size)) = (parts.next(), parts.next(), parts.next()) else {
+                // "<sha> missing" - no body follows.
+                continue;
+            };
+            let Ok(size) = size.parse::<usize>() else { continue };
+            let mut body = vec![0u8; size];
+            if r.read_exact(&mut body).is_err() {
+                break;
+            }
+            let mut nl = [0u8; 1];
+            let _ = r.read_exact(&mut nl);
+            out.push((sha.to_string(), kind.to_string(), body));
+        }
+    }
+    let _ = writer.join();
+    let _ = child.wait();
+    out
+}
+
+/// Commits whose tree still holds `blob`, newest first, capped at `max`.
+pub fn commits_holding_blob(repo: &Path, blob: &str, max: usize) -> Vec<String> {
+    let out = util::git(repo, &["log", "--all", "--format=%h %s", &format!("--find-object={blob}")]);
+    out.stdout.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).take(max).collect()
+}
+
 /// Work out, for every infected remote-tracking ref in `hits`, whether the
 /// clean local branch can simply be pushed over it.
 ///
@@ -285,15 +444,45 @@ pub fn plan_remote_fixes(repo: &Path, hits: &[RefHit]) -> Vec<RemotePlan> {
         let list = util::git(repo, &["rev-list", &range]);
         let divergent: Vec<String> = list.stdout.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
         plan.divergent = divergent.clone();
-        for sha in &divergent {
-            let names = util::git(repo, &["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha]);
-            let touched: Vec<String> = names.stdout.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
-            let touches_infection = touched.iter().any(|f| files.contains(f));
-            if !touches_infection {
-                let subject = util::git(repo, &["log", "-1", "--format=%h %s", sha]).stdout.trim().to_string();
-                plan.blocked = Some(format!("remote commit {subject} changes {} file(s) that are not part of the infection - merge or rebase it by hand first", touched.len()));
-                break;
-            }
+        // Ask what the remote's extra history changes *as a whole*, relative to
+        // the merge base, rather than walking commits one at a time.
+        //
+        // The per-commit walk this replaces ran `diff-tree` on each divergent
+        // commit - which prints nothing at all for a merge commit unless it is
+        // given `-m`/`--cc`. Every branch whose extra history contained a merge
+        // therefore looked like it touched no files, failed the
+        // "does it touch the infection?" test, and was refused with the
+        // self-contradicting reason "changes 0 file(s) that are not part of the
+        // infection". That is the common case, not a corner: the campaign
+        // re-pushes through a merge.
+        //
+        // The three-dot form is also a stricter reading of the rule this
+        // function documents. The old test passed a commit that touched an
+        // infected file *and* fifty real ones; this one requires every file the
+        // remote adds to be an infected file, so real work can never be on the
+        // discard side of a force-push.
+        let spec = format!("{local_ref}...{remote_ref}");
+        let names = util::git(repo, &["diff", "--name-only", &spec]);
+        let extra: Vec<String> = names
+            .stdout
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty() && !files.contains(l))
+            .collect();
+        if !extra.is_empty() {
+            // Name the files. "3 file(s)" tells a maintainer nothing about
+            // whether the work on the other side matters.
+            let shown: Vec<&str> = extra.iter().take(5).map(|s| s.as_str()).collect();
+            let more = extra.len().saturating_sub(shown.len());
+            let list = if more > 0 {
+                format!("{} (+{more} more)", shown.join(", "))
+            } else {
+                shown.join(", ")
+            };
+            plan.blocked = Some(format!(
+                "the remote has {} file(s) beyond your local branch that are not part of the infection: {list} - merge or rebase by hand first",
+                extra.len()
+            ));
         }
         plans.push(plan);
     }

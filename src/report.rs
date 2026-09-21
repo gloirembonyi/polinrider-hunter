@@ -1,7 +1,7 @@
 //! Output. Human-readable by default, `--json` for anything downstream.
 
 use crate::gitconfig::ConfigHit;
-use crate::gitscan::{RefHit, RemotePlan};
+use crate::gitscan::{HistoryHit, RefHit, RemotePlan};
 use crate::scanner::Finding;
 use crate::signatures::Severity;
 use crate::util::{self, BLUE, BOLD, DIM, GREEN, RED, YELLOW};
@@ -182,4 +182,94 @@ pub fn print_remote_plans(plans: &[RemotePlan], json: bool) {
             }
         }
     }
+}
+
+/// Payload blobs still reachable in history, and how to purge them.
+///
+/// Grouped by repository, because the purge is a per-repository operation and
+/// the command that does it takes the whole list of object ids at once.
+pub fn print_history_hits(hits: &[HistoryHit], json: bool) {
+    if json {
+        println!("{{\"history\":[");
+        for (i, h) in hits.iter().enumerate() {
+            println!(
+                "  {{\"repo\":\"{}\",\"blob\":\"{}\",\"path\":\"{}\",\"size\":{},\"indicators\":[{}]}}{}",
+                util::json_escape(&h.repo.to_string_lossy()),
+                util::json_escape(&h.blob),
+                util::json_escape(&h.path),
+                h.size,
+                h.iocs.iter().map(|s| format!("\"{}\"", util::json_escape(s))).collect::<Vec<_>>().join(","),
+                if i + 1 == hits.len() { "" } else { "," }
+            );
+        }
+        println!("]}}");
+        return;
+    }
+    if hits.is_empty() {
+        println!("{}", util::c(GREEN, "No payload left anywhere in history."));
+        return;
+    }
+    let mut repos: Vec<&std::path::Path> = hits.iter().map(|h| h.repo.as_path()).collect();
+    repos.sort();
+    repos.dedup();
+    for repo in repos {
+        let mine: Vec<&HistoryHit> = hits.iter().filter(|h| h.repo == repo).collect();
+        println!("{} {}", util::c(RED, "IN HISTORY"), util::c(DIM, &repo.to_string_lossy()));
+        for h in &mine {
+            println!("    {} {:>9} B  {}", util::c(BOLD, &h.blob[..12.min(h.blob.len())]), h.size, h.path);
+            println!("        {}", util::c(DIM, &h.iocs.join(", ")));
+            let commits = crate::gitscan::commits_holding_blob(repo, &h.blob, 4);
+            for c in commits {
+                println!("        {} {}", util::c(DIM, "in"), util::c(DIM, &c));
+            }
+        }
+        println!();
+        println!("    {}", util::c(YELLOW, "These are not on any branch tip - they are older commits. Nothing runs them"));
+        println!("    {}", util::c(YELLOW, "unless someone checks out that commit, but anyone with the repository can"));
+        println!("    {}", util::c(YELLOW, "read them by object id. To purge (rewrites every commit id; everyone must"));
+        println!("    {}", util::c(YELLOW, "re-clone afterwards, and GitHub keeps unreachable objects until its own GC):"));
+        println!();
+        // Write the id list ourselves rather than printing a shell one-liner to
+        // retype. `filter-repo` wants a file, the list is long, and a command
+        // the reader has to assemble by hand at 2am is a command that gets
+        // assembled wrong.
+        let ids: Vec<&str> = mine.iter().map(|h| h.blob.as_str()).collect();
+        let list = blob_id_file(repo, &ids);
+        println!("      cd {}", repo.display());
+        match &list {
+            Ok(p) => println!("      git filter-repo --strip-blobs-with-ids {} --force", p.display()),
+            Err(_) => {
+                println!("      # could not write the id list; put these ids in a file, one per line:");
+                for id in &ids {
+                    println!("      #   {id}");
+                }
+                println!("      git filter-repo --strip-blobs-with-ids <that-file> --force");
+            }
+        }
+        println!("      git push --force --all && git push --force --tags");
+        if let Ok(p) = &list {
+            println!();
+            println!("    {} {}", util::c(DIM, "id list written to"), util::c(DIM, &p.display().to_string()));
+        }
+        println!();
+    }
+}
+
+/// Write the blob ids to purge into the state directory, one per line.
+///
+/// Named after the repository so auditing several in one run does not have each
+/// overwrite the last.
+fn blob_id_file(repo: &std::path::Path, ids: &[&str]) -> std::io::Result<std::path::PathBuf> {
+    let stem = repo.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "repo".to_string());
+    let safe: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
+    let dir = crate::config::home().join("purge");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{safe}-blobs.txt"));
+    let mut out = String::new();
+    for id in ids {
+        out.push_str(id);
+        out.push('\n');
+    }
+    std::fs::write(&path, out)?;
+    Ok(path)
 }

