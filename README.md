@@ -5,19 +5,19 @@
 Finds and removes the **PolinRider** supply-chain malware from developer machines
 and git repositories, then keeps watching so it cannot come back quietly.
 
-Since 1.1 it also covers the other developer-targeted campaigns of 2025–26 —
+Since 1.1 it also covers the other developer-targeted campaigns of 2025–26 -
 the **Shai-Hulud** npm worm, **GlassWorm**'s invisible-Unicode payloads in editor
 extensions, the **npm-loader** (`runtimedev-link`) variant of the AppData
 campaign, **Contagious Interview** keylogger kits, injected **git config**
-(`core.fsmonitor`, hooks, nested bare repositories — "GitSpawn"), install-script
-droppers, pwn-request workflows and **ClickFix** run history — and it can repair
+(`core.fsmonitor`, hooks, nested bare repositories - "GitSpawn"), install-script
+droppers, pwn-request workflows and **ClickFix** run history - and it can repair
 a **poisoned remote branch** (`repos --fix`). Since 1.2 there is an **AI
 incident-response agent** (`agent`): a Gemini model with all of the above as
 tools, plus file reading, git history, process/persistence listing, web search
-and hash lookups — every change to your machine shown to you for a `y` first.
+and hash lookups - every change to your machine shown to you for a `y` first.
 The step-by-step is in [`docs/GUIDE.md`](docs/GUIDE.md).
 
-**Already infected?** Cleaning the files is half the job — whatever ran as you also took
+**Already infected?** Cleaning the files is half the job - whatever ran as you also took
 your git credentials and your tokens. [`docs/AFTER_AN_INFECTION.md`](docs/AFTER_AN_INFECTION.md)
 is the 30-minute runbook for taking that access back.
 
@@ -361,7 +361,7 @@ reports what it finds on a branch.
 ### Repairing a poisoned remote: `repos --fix`
 
 The campaign's propagation step re-pushes the victim's own latest commit with
-the payload appended — same message, same author date — so the remote branch
+the payload appended - same message, same author date - so the remote branch
 sits one rewritten commit "ahead" of the clean local one, and `git pull` would
 bring the infection down. `repos --fix` is the deliberate, human-invoked repair:
 

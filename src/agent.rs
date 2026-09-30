@@ -1080,21 +1080,21 @@ pub fn deterministic_report(paths: &[PathBuf]) -> String {
     let findings = scanner::scan_paths(paths, false);
     if findings.is_empty() { md.push_str("No indicators found.\n"); }
     for f in &findings {
-        md.push_str(&format!("- {} `{}` — {}\n", if f.is_critical() { "**INFECTED**" } else { "suspect" }, f.path.display(), f.hits.iter().map(|h| h.ioc).collect::<Vec<_>>().join(", ")));
+        md.push_str(&format!("- {} `{}` - {}\n", if f.is_critical() { "**INFECTED**" } else { "suspect" }, f.path.display(), f.hits.iter().map(|h| h.ioc).collect::<Vec<_>>().join(", ")));
     }
     md.push_str("\n## Repositories (all refs + git config)\n\n");
     let mut any = false;
     for r in paths.iter().filter(|p| gitscan::is_repo(p)) {
-        for h in gitscan::scan_repo(r, false) { any = true; md.push_str(&format!("- **INFECTED** {} `{}` :: {} — {}\n", r.display(), h.git_ref.replace("refs/", ""), h.file, h.iocs.join(", "))); }
-        for c in gitconfig::audit(r) { any = true; md.push_str(&format!("- git config {} `{}` = {} — {}\n", r.display(), c.key, c.value, c.why)); }
+        for h in gitscan::scan_repo(r, false) { any = true; md.push_str(&format!("- **INFECTED** {} `{}` :: {} - {}\n", r.display(), h.git_ref.replace("refs/", ""), h.file, h.iocs.join(", "))); }
+        for c in gitconfig::audit(r) { any = true; md.push_str(&format!("- git config {} `{}` = {} - {}\n", r.display(), c.key, c.value, c.why)); }
     }
     if !any { md.push_str("Clean.\n"); }
     md.push_str("\n## Persistence\n\n");
     let p = persist::check();
     let rm = winpersist::sweep(true);
     if p.is_empty() && rm.is_empty() { md.push_str("Nothing suspicious.\n"); }
-    for a in &rm { md.push_str(&format!("- **removable** {} `{}` — {}\n", a.kind, a.name, a.target)); }
-    for h in &p { md.push_str(&format!("- review `{}:{}` — {}\n", h.location, h.line_no, h.line)); }
+    for a in &rm { md.push_str(&format!("- **removable** {} `{}` - {}\n", a.kind, a.name, a.target)); }
+    for h in &p { md.push_str(&format!("- review `{}:{}` - {}\n", h.location, h.line_no, h.line)); }
     md.push_str("\n## Quarantine\n\n");
     let q = std::fs::read_to_string(config::quarantine_index()).unwrap_or_default();
     if q.trim().is_empty() { md.push_str("Empty.\n"); }

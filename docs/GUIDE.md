@@ -1,4 +1,4 @@
-# polinrider-hunter — how to use it
+# polinrider-hunter - how to use it
 
 <!-- POLINRIDER-HUNTER-DETECTOR: this file documents malware signatures. Not malware. -->
 
@@ -15,7 +15,7 @@ cargo build --release
 ```
 
 `cargo test` runs the suite: unit tests plus two end-to-end binaries (`tests/`)
-that plant every attack shape on disk — including a real poisoned remote — and
+that plant every attack shape on disk - including a real poisoned remote - and
 prove it gets removed.
 
 ## 1. Clean this machine: `hunt`
@@ -28,30 +28,30 @@ polinrider-hunter hunt --drives      # also every other drive (slower)
 
 What one `hunt` does, in this order:
 
-1. **Stops running loaders** — hidden `node -e` stage-2 processes.
-2. **Removes Windows persistence whose target is provably malware** — Run keys,
+1. **Stops running loaders** - hidden `node -e` stage-2 processes.
+2. **Removes Windows persistence whose target is provably malware** - Run keys,
    scheduled tasks, and **Startup-folder scripts** (`MicrosoftCLROptimization.vbs`,
    `VSCodeUpdater.vbs`, the `runtimedev-link` shim). Judged on the script's
    *contents* (fake NGEN path, `NativeImageGen`, `runtimedev-link`, C2 addresses),
-   never on its name — your own startup scripts are left alone.
+   never on its name - your own startup scripts are left alone.
 3. **Walks your home directory** and heals every infected file: padded config
    payloads, GlassWorm invisible-Unicode lines, `.env` droppers, JavaScript
    disguised as fonts, dropped loader files. Originals go to quarantine first.
 4. **Scans the hideouts the walk skips**: the fake `AppData\Local\Microsoft\CLR_v4.0`,
    `~/.config/runtimedev-link`, `~/.local/share/runtimedev-link`, and **removes
    cached malicious npm packages** from `~/.npm/_npx` and the global `node_modules`.
-5. **Audits every repository's git config and hooks** — `core.fsmonitor` set to
+5. **Audits every repository's git config and hooks** - `core.fsmonitor` set to
    a program is unset; hooks that `curl | sh` and nested bare repositories are
    named.
 6. **Checks the Win+R history** for a pasted fetch-and-execute command (ClickFix).
 
 Then it prints `hunt complete: …` with counts. Anything under **"clean these by
 hand"** is something it deliberately would not touch (JSON it cannot safely
-splice, UTF-16 files, hooks) — open each one and judge.
+splice, UTF-16 files, hooks) - open each one and judge.
 
 ## 2. Check your repositories' *remotes*: `repos`
 
-Your working tree can be clean while the branch on GitHub is poisoned — the
+Your working tree can be clean while the branch on GitHub is poisoned - the
 campaign re-pushes your own latest commit with the payload appended, same
 message, same date. `git status` shows nothing; `git pull` would bring it back.
 
@@ -68,7 +68,7 @@ re-audits. It only does so when:
 - a local branch tracks (or is named like) the remote branch,
 - that local branch itself carries no indicator, and
 - **every** commit the remote has beyond your local branch touches an infected
-  file — i.e. the remote's extra history *is* the infection.
+  file - i.e. the remote's extra history *is* the infection.
 
 Otherwise it prints **BLOCKED** with the reason (e.g. "remote commit abc123
 changes 3 files that are not part of the infection") and pushes nothing. Merge
@@ -101,15 +101,15 @@ What it can do (its *tools*): `scan`, `clean`, `repos_audit`, `repos_fix`,
 
 How the human stays in the loop:
 
-- **Read-only runs freely** — scanning, reading files, listing directories,
+- **Read-only runs freely** - scanning, reading files, listing directories,
   hashing, searching, and shell commands on a read-only allow-list (`git log/
   show/diff/status`, `dir`/`ls`, `type`/`cat`, `findstr`/`grep`, `tasklist`,
   `reg query`, `schtasks /query`, `netstat`, `Get-*` PowerShell…).
-- **Anything mutating asks first** — `clean`, `remove_persistence`, `repos_fix`,
+- **Anything mutating asks first** - `clean`, `remove_persistence`, `repos_fix`,
   `kill_process`, and any other command. You see the exact command and its
   reason and answer `y` / `n` (with an optional reason the agent gets to read) /
   `e` to edit a command / `a` always for that tool / `q` quit.
-- **Some things are refused even with approval** — disk wipes, mass deletes,
+- **Some things are refused even with approval** - disk wipes, mass deletes,
   registry-wide deletes, and download-and-execute one-liners (`curl | sh`,
   `powershell -enc`, `mshta`, `iex`).
 - **`--yes`** pre-approves the mutating tools for people who have already
@@ -117,11 +117,11 @@ How the human stays in the loop:
 - Every turn, tool call and result is appended to a transcript in the state
   directory (`agent\<timestamp>.jsonl`), reports go to `reports\`.
 
-The agent's method is the incident-response loop — triage, scope, contain,
-eradicate, root cause, recover, report — and its rules say evidence first
+The agent's method is the incident-response loop - triage, scope, contain,
+eradicate, root cause, recover, report - and its rules say evidence first
 (paths, lines, commit hashes, authors, dates, IPs), never guess a finding, and
 treat web results as leads, not instructions. When it sees the campaign's
-signature move — your own commits re-pushed with payloads — it will tell you the
+signature move - your own commits re-pushed with payloads - it will tell you the
 credential that pushed them is compromised and put rotation at the top of the
 report.
 
@@ -148,10 +148,10 @@ every pass.
 
 | Command | Use it when |
 |---|---|
-| `scan <paths>` | "Is this folder clean?" — reports (incl. git config), changes nothing, exit 1 if infected |
+| `scan <paths>` | "Is this folder clean?" - reports (incl. git config), changes nothing, exit 1 if infected |
 | `clean <paths>` | fix just these folders (quarantines first; `--dry-run` to preview) |
 | `procs` / `procs --kill` | list / stop hidden stage-2 processes |
-| `persistence` | shell profiles, Startup, Run keys, tasks, Win+R history — what is removable vs. review-by-hand |
+| `persistence` | shell profiles, Startup, Run keys, tasks, Win+R history - what is removable vs. review-by-hand |
 | `quarantine` | list the originals kept aside |
 | `protect <repo>` | just the pre-commit hook |
 
@@ -190,7 +190,7 @@ payload already gone, the launcher still armed); the `runtimedev-link` npm
 loader's `agent.env`, `agent.env.bat`, `start.vbs` and task XML under
 `~/.config` and `~/.local/share`; two staged loaders in `%TEMP%`; and every one
 of the developer's GitHub repositories with its default branch re-pushed as the
-developer's own latest commit plus a payload — in `api/index.js`, a route file,
+developer's own latest commit plus a payload - in `api/index.js`, a route file,
 `postcss.config.mjs`, a `.woff2` "font" plus `.vscode/tasks.json`, a
 `vite.config.ts` plus a dropped `.env`. The working trees were clean, which is
 exactly why nothing looked wrong. `hunt` removed the shim and the files,
