@@ -467,6 +467,24 @@ fn is_gitignore(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// A `.gitignore` with the campaign's hiding entries taken out, line endings
+/// normalised. Two ignore files that compare equal under this differ only by
+/// the attack's step, so overwriting one with the other loses nothing.
+pub fn gitignore_without_hidden_artifacts(data: &[u8]) -> String {
+    let text = String::from_utf8_lossy(data);
+    let mut out = String::new();
+    for raw in text.lines() {
+        let entry = raw.trim().trim_start_matches('\u{feff}').trim_start_matches('/');
+        let mut hostile = ARTIFACT_NAMES.iter().chain(LOADER_ARTIFACT_NAMES.iter());
+        if !entry.is_empty() && hostile.any(|a| a.eq_ignore_ascii_case(entry)) {
+            continue;
+        }
+        out.push_str(raw.trim_end());
+        out.push('\n');
+    }
+    out.trim_end().to_string()
+}
+
 /// Propagation artefacts hidden in a `.gitignore`.
 ///
 /// Part of this campaign is an edit to `.gitignore` that adds its own dropped

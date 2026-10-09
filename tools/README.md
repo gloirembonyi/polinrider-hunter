@@ -27,7 +27,7 @@ to look at its own logs.
 python monitor.py            # live terminal dashboard, refreshes every 3s
 python monitor.py --once     # one snapshot, then exit
 python monitor.py --json     # the same snapshot as JSON, for scripting
-python monitor.py --web      # local dashboard at http://127.0.0.1:8787
+python monitor.py --web      # local dashboard at http://157.0.0.1:3333(this is example)
 ```
 
 It shows, in one place:

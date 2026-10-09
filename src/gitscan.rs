@@ -461,13 +461,31 @@ pub fn plan_remote_fixes(repo: &Path, hits: &[RefHit]) -> Vec<RemotePlan> {
         // infected file *and* fifty real ones; this one requires every file the
         // remote adds to be an infected file, so real work can never be on the
         // discard side of a force-push.
+        //
+        // A file the remote changed is only work at risk if the remote *tip*
+        // still differs from the local tip there. The campaign's usual shape is
+        // the victim's own latest commit replayed with the payload added (same
+        // message, same author date) on top of the shared parent: the three-dot
+        // diff then lists every file of that honest commit, although the local
+        // branch already holds each one byte for byte. Intersecting with the
+        // tip-to-tip diff drops those, and still blocks any file the remote
+        // added or changed that local does not have.
+        //
+        // Files that are the attack's own bookkeeping - a propagation artefact
+        // such as `branch_structure.json`, or a `.gitignore` whose only change
+        // is entries hiding those artefacts - are part of the infection, not
+        // work, and are discarded with it.
         let spec = format!("{local_ref}...{remote_ref}");
         let names = util::git(repo, &["diff", "--name-only", &spec]);
+        let tips = util::git(repo, &["diff", "--name-only", &local_ref, &remote_ref]);
+        let differs_at_tip: Vec<&str> = tips.stdout.lines().map(|l| l.trim()).collect();
         let extra: Vec<String> = names
             .stdout
             .lines()
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty() && !files.contains(l))
+            .filter(|l| differs_at_tip.contains(&l.as_str()))
+            .filter(|l| !is_campaign_bookkeeping(repo, &local_ref, &remote_ref, l))
             .collect();
         if !extra.is_empty() {
             // Name the files. "3 file(s)" tells a maintainer nothing about
@@ -487,6 +505,22 @@ pub fn plan_remote_fixes(repo: &Path, hits: &[RefHit]) -> Vec<RemotePlan> {
         plans.push(plan);
     }
     plans
+}
+
+/// Whether the remote's version of `file` is only the attack's bookkeeping.
+fn is_campaign_bookkeeping(repo: &Path, local_ref: &str, remote_ref: &str, file: &str) -> bool {
+    let path = Path::new(file);
+    if scanner::is_artifact(path) {
+        return true;
+    }
+    let is_ignore = path.file_name().and_then(|n| n.to_str()).map(|n| n.eq_ignore_ascii_case(".gitignore")).unwrap_or(false);
+    if !is_ignore {
+        return false;
+    }
+    let (Some(local), Some(remote)) = (blob_at(repo, local_ref, file), blob_at(repo, remote_ref, file)) else {
+        return false;
+    };
+    scanner::gitignore_without_hidden_artifacts(&local) == scanner::gitignore_without_hidden_artifacts(&remote)
 }
 
 /// Push the clean local branch over the poisoned remote branch.

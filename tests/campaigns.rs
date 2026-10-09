@@ -320,6 +320,55 @@ fn repos_fix_refuses_when_the_remote_has_real_work_too() {
     assert_eq!(git(&bare, &["rev-parse", "main"]), remote_sha, "nothing was pushed");
 }
 
+/// The victim's latest commit, replayed on its shared parent with the payload,
+/// a `branch_structure.json` manifest and `.gitignore` entries hiding it.
+///
+/// Regression test, from kwik-ride-backend-v1 on 2026-10-02. The three-dot diff
+/// listed every file of the honest commit as "work beyond your local branch",
+/// although local held each one byte for byte, and the campaign's own
+/// bookkeeping files counted as real work too, so the branch was BLOCKED.
+#[test]
+fn repos_fix_sees_through_a_replayed_commit_and_its_bookkeeping() {
+    let sb = Sandbox::new("remotereplay");
+    let bare = sb.root.join("origin.git");
+    let a = sb.root.join("a");
+    let b = sb.root.join("b");
+    std::fs::create_dir_all(&bare).unwrap();
+    std::fs::create_dir_all(&a).unwrap();
+    git(&bare, &["init", "-q", "--bare", "-b", "main"]);
+
+    git(&a, &["init", "-q", "-b", "main"]);
+    let clean = "export default [];\n";
+    std::fs::write(a.join("eslint.config.mjs"), clean).unwrap();
+    std::fs::write(a.join(".gitignore"), "node_modules\n").unwrap();
+    git(&a, &["add", "."]);
+    git(&a, &["commit", "-q", "-m", "init"]);
+    git(&a, &["remote", "add", "origin", bare.to_str().unwrap()]);
+    git(&a, &["push", "-q", "-u", "origin", "main"]);
+
+    // The attacker replays the victim's next commit with the payload added.
+    git(&sb.root, &["clone", "-q", bare.to_str().unwrap(), "b"]);
+    std::fs::write(b.join("feature.ts"), "export const x = 1;\n").unwrap();
+    let pad: String = std::iter::repeat('\t').take(500).collect();
+    std::fs::write(b.join("eslint.config.mjs"), format!("{}{pad}global.i = 'A9-4221';global.r=require;\n", clean.trim_end())).unwrap();
+    std::fs::write(b.join("branch_structure.json"), "{\"default_branch\": \"main\"}\n").unwrap();
+    std::fs::write(b.join(".gitignore"), "node_modules\nbranch_structure.json\ntemp_auto_push.bat\n").unwrap();
+    git(&b, &["add", "."]);
+    git(&b, &["commit", "-q", "-m", "feat: x"]);
+    git(&b, &["push", "-q", "origin", "main"]);
+
+    // Meanwhile the victim made the same honest commit locally.
+    std::fs::write(a.join("feature.ts"), "export const x = 1;\n").unwrap();
+    git(&a, &["add", "."]);
+    git(&a, &["commit", "-q", "-m", "feat: x"]);
+    let clean_sha = git(&a, &["rev-parse", "HEAD"]);
+
+    git(&a, &["fetch", "-q", "origin"]);
+    let (code, out) = run_hunter(&["repos", "--no-fetch", "--fix", a.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(git(&bare, &["rev-parse", "main"]), clean_sha, "remote main is the clean commit again");
+}
+
 /// The infection arriving through a *merge* commit must still be repairable.
 ///
 /// Regression test. `plan_remote_fixes` used to ask `git diff-tree` what each

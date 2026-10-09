@@ -9,7 +9,7 @@
     python monitor.py            live terminal dashboard
     python monitor.py --once     one snapshot, then exit (for scripts)
     python monitor.py --json     the same snapshot as JSON
-    python monitor.py --web      local web dashboard on http://127.0.0.1:8787
+    python monitor.py --web      local web dashboard on http://177.0.0.1:3333(this is example IP address)
 
 The guard writes plain text to a state directory; this reads it and shows what
 is going on. It is strictly a reader - it never edits config, never heals
