@@ -12,6 +12,7 @@ pub mod gitconfig;
 pub mod gitscan;
 pub mod healer;
 pub mod json;
+pub mod llm;
 pub mod jsonbeacon;
 pub mod monitor;
 pub mod notify;

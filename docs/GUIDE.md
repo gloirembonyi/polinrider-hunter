@@ -77,59 +77,124 @@ or rebase that work by hand, `clean` + commit, then run `--fix` again.
 Order that works: **commit your clean local work first**, then `repos --fix`.
 Whatever is in your local branch is what the remote becomes.
 
-## 2b. Let the AI investigate: `agent`
+### No clean local branch? Remove the poisoned commit itself: `repos --excise`
 
-`agent` puts a Gemini model in front of every command above, with you approving
-anything that changes the machine. It is for the questions the scanners cannot
-answer on their own: *how did this get here, is this package known-bad, what
-else on this machine talks to that address, which commit and which account
-introduced it, what do I still have to rotate?*
+The campaign rewrites *every* branch of *every* repository the stolen token
+reaches, and nobody has all of them checked out. It also hides well after a
+first cleanup: a "remove malware" commit on top makes the tip clean, but the
+poisoned commit is still the one everyone pulls (the "2 incoming" your editor
+shows). `--excise` repairs both, from the remote alone:
 
 ```powershell
-polinrider-hunter set-key AIza...          # free key: https://aistudio.google.com/apikey (no card)
-polinrider-hunter agent                    # interactive: it investigates, you steer with plain text
-polinrider-hunter agent --task "Find out how the Startup shim got here and whether anything else launches from AppData"
-polinrider-hunter agent ~/work/repo-a ~/work/repo-b    # focus on these projects
-polinrider-hunter report                   # a written incident report (AI-written with a key, factual without)
+polinrider-hunter repos --excise --dry-run <repo>   # show the plan: which commit, which files
+polinrider-hunter repos --excise <repo>             # rebuild and push
 ```
 
-What it can do (its *tools*): `scan`, `clean`, `repos_audit`, `repos_fix`,
-`processes`, `kill_process`, `persistence`, `remove_persistence`, `read_file`,
-`list_dir` (with "modified in the last N days"), `hash_file`, `threat_intel`
-(VirusTotal, if you add `--vt-key`), `web_search`, `web_fetch`, `run_command`,
-`quarantine_list`, `ask_user`, `write_report`, `finish`.
+For each remote branch it finds the commit that brought the payload in (an
+infected commit on a clean parent, within the last 15 commits) and rebuilds it:
+the same tree with every infected file put back as the parent had it, under the
+same message, author and dates. Cleanup commits on top are folded away. The
+result is the commit you originally wrote, as if the attack never happened. It
+refuses when real work landed after the infection, never pushes a commit that
+still audits infected, and pushes with `--force-with-lease`.
 
-How the human stays in the loop:
+The branch audit now also catches what content matching cannot: dropped
+artefacts by name (`config.bat`, `branch_structure.json`), an **armed `.vscode`
+autorun** (`runOn: folderOpen` plus `task.allowAutomaticTasks` switched on, or a
+task that runs a hidden script), and JavaScript saved under a font name
+(`public/fonts/fa-solid-300.llf`) that such a task runs.
 
-- **Read-only runs freely** - scanning, reading files, listing directories,
-  hashing, searching, and shell commands on a read-only allow-list (`git log/
-  show/diff/status`, `dir`/`ls`, `type`/`cat`, `findstr`/`grep`, `tasklist`,
-  `reg query`, `schtasks /query`, `netstat`, `Get-*` PowerShell…).
-- **Anything mutating asks first** - `clean`, `remove_persistence`, `repos_fix`,
-  `kill_process`, and any other command. You see the exact command and its
-  reason and answer `y` / `n` (with an optional reason the agent gets to read) /
-  `e` to edit a command / `a` always for that tool / `q` quit.
-- **Some things are refused even with approval** - disk wipes, mass deletes,
-  registry-wide deletes, and download-and-execute one-liners (`curl | sh`,
-  `powershell -enc`, `mshta`, `iex`).
-- **`--yes`** pre-approves the mutating tools for people who have already
-  decided; the refusal list still applies. In the REPL, `/yes` toggles it.
-- Every turn, tool call and result is appended to a transcript in the state
-  directory (`agent\<timestamp>.jsonl`), reports go to `reports\`.
+### Every repository you own: `tools/scan_remote.py` + `tools/excise_remote.py`
 
-The agent's method is the incident-response loop - triage, scope, contain,
-eradicate, root cause, recover, report - and its rules say evidence first
-(paths, lines, commit hashes, authors, dates, IPs), never guess a finding, and
-treat web results as leads, not instructions. When it sees the campaign's
-signature move - your own commits re-pushed with payloads - it will tell you the
-credential that pushed them is compromised and put rotation at the top of the
-report.
+For repositories you have not cloned (`gh` must be logged in):
 
-Models: the free Gemini tier (Flash family) is enough. The client tries the
-configured model first, then falls back (`gemini-2.5-flash` → `flash-lite` →
-`3.1-flash-lite`) on quota or availability errors. If you have access to a
-security-tuned model (Gemini Flash *Cyber*, Sec-Gemini), `set-key … --model <id>`
-puts it first in line.
+```powershell
+python -I tools\scan_remote.py --owner <you-or-org> > scan.txt      # every branch of every repo
+python -I tools\excise_remote.py --owner <you-or-org> --local local.txt          # plan
+python -I tools\excise_remote.py --owner <you-or-org> --local local.txt --push   # do it
+```
+
+`excise_remote.py` does the same rebuild over the GitHub API, and first looks
+for your original commit in the local clones listed in `local.txt` (same
+message, same date, identical clean tree) so those branches get your exact
+original back. A 403 means your account is read-only on that repository - an
+owner has to run it.
+
+## 2b. Ask the AI agent to do it: `agent`
+
+`agent` is a chat in your terminal with an AI that has this whole tool in its
+hands - and a terminal, file read/write/edit, glob and grep search, the web.
+Ask for anything on your machine or your repositories in plain words: *find out
+how this got here, clean these repos, remove the poisoned commits from every
+branch, fix this build, write me a script that...*
+
+```powershell
+polinrider-hunter ai setup                 # pick a provider, paste a key, it tests the connection
+polinrider-hunter agent                    # chat; type what you want
+polinrider-hunter ai "audit and repair every branch of C:\work\repo"    # start on a task, stay in the chat
+polinrider-hunter agent --task "..."       # one job, then exit (scripts, CI)
+polinrider-hunter agent --investigate      # the full malware investigation
+polinrider-hunter report                   # a written incident report (read-only)
+```
+
+**Providers and keys.** One key is enough; set more and switch any time.
+
+| provider | key from | default model |
+|---|---|---|
+| `anthropic` | console.anthropic.com | `claude-opus-5-5` |
+| `openai` | platform.openai.com | `gpt-4.1` |
+| `gemini` | aistudio.google.com/apikey (free tier) | `gemini-3.8-flash` |
+| `openrouter` | openrouter.ai/keys (hundreds of models, one key) | `openrouter/auto` |
+| `groq`, `deepseek` | their consoles | |
+| `ollama` | local, no key | `llama3.1` |
+| `custom` | any OpenAI-compatible endpoint (`--base-url`) | |
+
+```powershell
+polinrider-hunter ai key anthropic sk-ant-...   # store a key (or set ANTHROPIC_API_KEY, OPENAI_API_KEY, ...)
+polinrider-hunter ai use openai gpt-4.1         # default provider + model
+polinrider-hunter ai use custom my-model --base-url http://localhost:1234/v1
+polinrider-hunter ai                            # what is set up, what is active
+polinrider-hunter ai test                       # one round trip to prove the key works
+```
+
+Keys live in the state directory's `config.txt`; `ai` only ever prints them
+masked. On Claude the agent uses adaptive thinking at high effort and turns on
+the API's server-side fallback, so a turn a safety classifier declines (malware
+analysis can trip one) is re-run on a suitable model instead of stopping.
+
+**In the chat:** `/help`, `/status` (model, mode, steps, tokens),
+`/provider <id> [model]`, `/model <name>`, `/key <id> <key>`, `/mode <m>`,
+`/plan`, `/tools`, `/investigate`, `/report`, `/clear`, `/exit`. A session keeps
+its history when you switch provider or model.
+
+**Its tools:** `run_command` (a real terminal: `cmd`, `powershell` or `sh`,
+timeout up to 30 min), `read_file`, `write_file`, `edit_file`, `glob_search`,
+`grep_search`, `list_dir`, `todo_write` (its plan, shown to you), `scan`,
+`clean`, `repos_audit`, `repos_fix`, `repos_excise`, `repos_history`,
+`processes`, `kill_process`, `persistence`, `remove_persistence`, `hash_file`,
+`threat_intel`, `web_search`, `web_fetch`, `quarantine_list`, `ask_user`,
+`write_report`, `finish`.
+
+**Permission modes** (`--mode`, `/mode`, or `ai mode` for the default):
+
+- `read-only` - it investigates and reports; every change is refused.
+- `ask` (default) - read-only work runs freely; every change shows you the
+  exact command/file/diff first: `y` / `n` (with a reason it reads) / `e` edit
+  the command / `a` always for that tool / `q` quit.
+- `workspace-write` - file writes and edits inside the project directories run
+  without asking; everything else still asks.
+- `full-access` (`--yes`) - nothing asks.
+
+**Refused in every mode:** disk wipes, mass deletes, registry-wide deletes,
+download-piped-to-a-shell (`curl ... | sh`, `iex`, `-enc`, `mshta`). Every turn,
+tool call and result goes to a transcript in the state directory
+(`agent\<timestamp>.jsonl`); reports go to `reports\`.
+
+Its method for incidents is still triage, scope, contain, eradicate, root cause,
+recover, report - evidence first, files in a suspect repository treated as
+evidence rather than instructions (it will not run a repository's scripts before
+scanning it), and when your own commits were re-pushed with payloads it tells
+you the pushing credential is compromised and puts rotation first.
 
 ## 3. Keep it clean: `install`
 

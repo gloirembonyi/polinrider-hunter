@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use polinrider_hunter::{
     agent, config, daemon, gemini, gitconfig, gitscan, healer, monitor, notify, persist, procscan,
-    report, scanner, service, util, winpersist,
+    llm, report, scanner, service, util, winpersist,
 };
 
 use config::Config;
@@ -30,6 +30,10 @@ struct Args {
     task: Option<String>,
     max_steps: Option<usize>,
     vt_key: Option<String>,
+    /// `--provider`, `--mode`, `--base-url` for the agent.
+    provider: Option<String>,
+    mode: Option<String>,
+    base_url: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -44,7 +48,16 @@ fn parse_args() -> Args {
     let mut task = None;
     let mut max_steps = None;
     let mut vt_key = None;
+    let mut provider = None;
+    let mut mode = None;
+    let mut base_url = None;
     while let Some(a) = it.next() {
+        if a == "--provider" { provider = it.next(); continue; }
+        if let Some(v) = a.strip_prefix("--provider=") { provider = Some(v.to_string()); continue; }
+        if a == "--mode" { mode = it.next(); continue; }
+        if let Some(v) = a.strip_prefix("--mode=") { mode = Some(v.to_string()); continue; }
+        if a == "--base-url" { base_url = it.next(); continue; }
+        if let Some(v) = a.strip_prefix("--base-url=") { base_url = Some(v.to_string()); continue; }
         if a == "--key" { key = it.next(); continue; }
         if let Some(v) = a.strip_prefix("--key=") { key = Some(v.to_string()); continue; }
         if a == "--model" { model = it.next(); continue; }
@@ -80,6 +93,9 @@ fn parse_args() -> Args {
         task,
         max_steps,
         vt_key,
+        provider,
+        mode,
+        base_url,
     }
 }
 
@@ -113,7 +129,8 @@ fn main() {
         "scan" => cmd_scan(&args, &cfg, json),
         "clean" => cmd_clean(&args, &cfg, json),
         "repos" => cmd_repos(&args, &cfg, json),
-        "agent" | "ai" | "investigate" => cmd_agent(&args, cfg),
+        "agent" | "investigate" | "chat" => cmd_agent(&args, cfg),
+        "ai" => cmd_ai(&args, cfg),
         "report" => cmd_report(&args, cfg),
         "set-key" => cmd_set_key(&args, cfg),
         "protect" => cmd_protect(&args, &cfg),
@@ -483,14 +500,232 @@ fn cmd_set_key(args: &Args, mut cfg: Config) -> i32 {
 }
 
 fn build_model(args: &Args, cfg: &Config) -> Result<Box<dyn gemini::Model>, String> {
-    let key = agent::resolve_key(args.key.as_deref(), cfg).ok_or_else(|| {
-        "no Gemini API key. Get a free one at https://aistudio.google.com/apikey, then either\n  polinrider-hunter set-key <KEY>\n  or set GEMINI_API_KEY, or pass --key <KEY>".to_string()
-    })?;
-    if !gemini::curl_available() {
-        return Err("`curl` was not found on PATH - the agent uses it for HTTPS. Install curl (it ships with Windows 10+, macOS and every Linux).".into());
+    let mut cfg = cfg.clone();
+    if let Some(b) = &args.base_url {
+        cfg.ai_base_url = b.clone();
     }
-    let model = agent::resolve_model(args.model.as_deref(), cfg);
-    Ok(Box::new(gemini::Gemini::new(&key, model.as_deref())))
+    let Some(provider) = llm::resolve_provider(args.provider.as_deref(), &cfg) else {
+        return Err(no_key_help());
+    };
+    let model = args.model.clone().or_else(|| std::env::var("POLINRIDER_MODEL").ok());
+    llm::build(&provider, model.as_deref(), args.key.as_deref(), &cfg)
+}
+
+fn no_key_help() -> String {
+    let mut s = String::from("no AI provider is set up yet. Pick one and add its key:\n");
+    for p in llm::PROVIDERS.iter().filter(|p| p.id != "custom") {
+        s.push_str(&format!("  polinrider-hunter ai key {:<10} <KEY>   {} ({})\n", p.id, p.label, p.key_url));
+    }
+    s.push_str("or run the guided setup:  polinrider-hunter ai setup");
+    s
+}
+
+/// `ai` - manage providers and keys; anything else is a task for the agent.
+fn cmd_ai(args: &Args, mut cfg: Config) -> i32 {
+    let sub = args.positional.first().map(|s| s.to_ascii_lowercase()).unwrap_or_else(|| "status".into());
+    let arg = |i: usize| args.positional.get(i).cloned().unwrap_or_default();
+    match sub.as_str() {
+        "status" | "list" | "providers" => {
+            let active = llm::resolve_provider(args.provider.as_deref(), &cfg);
+            println!("{}", util::c(BOLD, "AI providers"));
+            for p in llm::PROVIDERS {
+                let key = llm::key_for(p.id, &cfg);
+                let state = match (&key, p.needs_key) {
+                    (Some(k), _) => util::c(GREEN, &format!("key {}", llm::mask(k))),
+                    (None, false) => util::c(DIM, "no key needed"),
+                    (None, true) => util::c(DIM, "no key"),
+                };
+                let mark = if active.as_deref() == Some(p.id) { util::c(GREEN, "*") } else { " ".into() };
+                println!(" {mark} {:<11} {:<48} {}", p.id, p.label, state);
+            }
+            match &active {
+                Some(a) => {
+                    let model = if !cfg.ai_model.is_empty() && cfg.ai_provider.eq_ignore_ascii_case(a) { cfg.ai_model.clone() } else { llm::provider(a).map(|p| p.default_model.to_string()).unwrap_or_default() };
+                    println!("\n  active: {} {}", util::c(BOLD, a), util::c(DIM, &format!("model {model}")));
+                }
+                None => println!("\n  {}", util::c(YELLOW, "no provider ready - polinrider-hunter ai setup")),
+            }
+            println!("  {}", util::c(DIM, &format!("agent mode: {}  ·  config: {}", if cfg.agent_mode.is_empty() { "ask" } else { &cfg.agent_mode }, config::config_path().display())));
+            0
+        }
+        "key" | "set-key" | "add" => {
+            let (id, key) = (arg(1), arg(2));
+            if id.is_empty() || key.is_empty() {
+                eprintln!("usage: polinrider-hunter ai key <provider> <KEY>\nproviders: {}", llm::PROVIDERS.iter().map(|p| p.id).collect::<Vec<_>>().join(", "));
+                return 2;
+            }
+            if llm::provider(&id).is_none() && id != "vt" {
+                eprintln!("unknown provider `{id}`");
+                return 2;
+            }
+            cfg.set_ai_key(&id, &key);
+            if cfg.ai_provider.is_empty() && id != "vt" {
+                cfg.ai_provider = id.to_ascii_lowercase();
+            }
+            save_cfg(&cfg, &format!("{id} key {} saved", llm::mask(&key)))
+        }
+        "remove" | "rm" | "delete" => {
+            let id = arg(1);
+            if id.is_empty() {
+                eprintln!("usage: polinrider-hunter ai remove <provider>");
+                return 2;
+            }
+            cfg.set_ai_key(&id, "");
+            if cfg.ai_provider.eq_ignore_ascii_case(&id) {
+                cfg.ai_provider.clear();
+                cfg.ai_model.clear();
+            }
+            save_cfg(&cfg, &format!("{id} key removed"))
+        }
+        "use" | "provider" | "switch" => {
+            let id = arg(1);
+            if llm::provider(&id).is_none() {
+                eprintln!("usage: polinrider-hunter ai use <provider> [model] [--base-url <url>]\nproviders: {}", llm::PROVIDERS.iter().map(|p| p.id).collect::<Vec<_>>().join(", "));
+                return 2;
+            }
+            cfg.ai_provider = id.to_ascii_lowercase();
+            cfg.ai_model = arg(2).or_else_model(args);
+            if let Some(b) = &args.base_url {
+                cfg.ai_base_url = b.clone();
+            }
+            save_cfg(&cfg, &format!("now using {}{}", cfg.ai_provider, if cfg.ai_model.is_empty() { String::new() } else { format!(" / {}", cfg.ai_model) }))
+        }
+        "mode" => {
+            let m = arg(1);
+            match agent::Mode::parse(&m) {
+                Some(mode) if !m.is_empty() => {
+                    cfg.agent_mode = mode.label().to_string();
+                    save_cfg(&cfg, &format!("default agent mode is now {}", mode.label()))
+                }
+                _ => {
+                    eprintln!("usage: polinrider-hunter ai mode <read-only|ask|workspace-write|full-access>");
+                    2
+                }
+            }
+        }
+        "setup" | "init" | "login" => ai_setup(cfg),
+        "test" | "ping" => {
+            let mut m = match build_model(args, &cfg) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("{} {e}", util::c(RED, "ai:"));
+                    return 2;
+                }
+            };
+            println!("{} {}", util::c(DIM, "asking"), m.name());
+            let ask = polinrider_hunter::json::Json::obj(vec![
+                ("role", polinrider_hunter::json::Json::str("user")),
+                ("parts", polinrider_hunter::json::Json::arr(vec![polinrider_hunter::json::Json::obj(vec![("text", polinrider_hunter::json::Json::str("Reply with exactly: polinrider-hunter AI link OK"))])])),
+            ]);
+            match m.generate("You are a connectivity check. Answer in one short line.", &[ask], &polinrider_hunter::json::Json::arr(vec![])) {
+                Ok(turn) => {
+                    let text: String = turn.get("parts").and_then(|p| p.as_arr()).cloned().unwrap_or_default().iter().filter_map(|p| p.get("text").and_then(|t| t.as_str()).map(str::to_string)).collect::<Vec<_>>().join(" ");
+                    println!("{} {}", util::c(GREEN, "ok"), text.trim());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("{} {e}", util::c(RED, "failed:"));
+                    1
+                }
+            }
+        }
+        _ => {
+            // Not a subcommand: the words are a task for the agent.
+            let mut a = Args {
+                cmd: "agent".into(),
+                positional: Vec::new(),
+                flags: args.flags.clone(),
+                interval: args.interval,
+                port: args.port,
+                key: args.key.clone(),
+                model: args.model.clone(),
+                task: Some(args.task.clone().unwrap_or_else(|| args.positional.join(" "))),
+                max_steps: args.max_steps,
+                vt_key: args.vt_key.clone(),
+                provider: args.provider.clone(),
+                mode: args.mode.clone(),
+                base_url: args.base_url.clone(),
+            };
+            if !a.has("--once") {
+                // `ai "do X"` stays in the chat after the task, like the REPL.
+                a.flags.push("--chat".into());
+            }
+            cmd_agent(&a, cfg)
+        }
+    }
+}
+
+trait OrElseModel {
+    fn or_else_model(self, args: &Args) -> String;
+}
+impl OrElseModel for String {
+    fn or_else_model(self, args: &Args) -> String {
+        if self.is_empty() { args.model.clone().unwrap_or_default() } else { self }
+    }
+}
+
+fn save_cfg(cfg: &Config, msg: &str) -> i32 {
+    match cfg.save() {
+        Ok(()) => {
+            println!("{} {msg} ({})", util::c(GREEN, "ok"), config::config_path().display());
+            0
+        }
+        Err(e) => {
+            eprintln!("could not save config: {e}");
+            1
+        }
+    }
+}
+
+/// Guided provider setup: pick, paste the key, test it.
+fn ai_setup(mut cfg: Config) -> i32 {
+    use std::io::{BufRead, Write};
+    let read = |prompt: &str| -> Option<String> {
+        print!("{prompt}");
+        let _ = std::io::stdout().flush();
+        let mut s = String::new();
+        match std::io::stdin().lock().read_line(&mut s) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => Some(s.trim().to_string()),
+        }
+    };
+    println!("{}", util::c(BOLD, "Set up the AI agent"));
+    for (i, p) in llm::PROVIDERS.iter().enumerate() {
+        println!("  {}. {:<11} {}", i + 1, p.id, p.label);
+    }
+    let Some(choice) = read("provider (number or name): ") else { return 2 };
+    let p = choice.parse::<usize>().ok().and_then(|n| llm::PROVIDERS.get(n.wrapping_sub(1))).or_else(|| llm::provider(&choice));
+    let Some(p) = p else {
+        eprintln!("unknown provider `{choice}`");
+        return 2;
+    };
+    if p.needs_key {
+        println!("  get a key at {}", util::c(BOLD, p.key_url));
+        let Some(key) = read(&format!("paste your {} key: ", p.label)) else { return 2 };
+        if key.is_empty() {
+            eprintln!("no key entered");
+            return 2;
+        }
+        cfg.set_ai_key(p.id, &key);
+    }
+    if p.id == "custom" || p.id == "ollama" {
+        let def = if p.base_url.is_empty() { "http://localhost:1234/v1" } else { p.base_url };
+        let url = read(&format!("endpoint [{def}]: ")).unwrap_or_default();
+        cfg.ai_base_url = if url.is_empty() { def.to_string() } else { url };
+    }
+    let model = read(&format!("model [{}]: ", if p.default_model.is_empty() { "required" } else { p.default_model })).unwrap_or_default();
+    cfg.ai_provider = p.id.to_string();
+    cfg.ai_model = model;
+    if save_cfg(&cfg, &format!("{} configured", p.id)) != 0 {
+        return 1;
+    }
+    println!("{}", util::c(DIM, "testing the connection..."));
+    let args = Args { cmd: "ai".into(), positional: vec!["test".into()], flags: vec![], interval: None, port: None, key: None, model: None, task: None, max_steps: None, vt_key: None, provider: None, mode: None, base_url: None };
+    let code = cmd_ai(&args, Config::load());
+    if code == 0 {
+        println!("{}", util::c(GREEN, "ready - start with: polinrider-hunter agent"));
+    }
+    code
 }
 
 fn cmd_agent(args: &Args, cfg: Config) -> i32 {
@@ -500,7 +735,15 @@ fn cmd_agent(args: &Args, cfg: Config) -> i32 {
     };
     let paths = agent_paths(args, &cfg);
     let yes = args.has("--yes");
-    let interactive = args.task.is_none();
+    let mode_name = args.mode.clone().unwrap_or_else(|| cfg.agent_mode.clone());
+    let mode = if yes { agent::Mode::FullAccess } else {
+        match agent::Mode::parse(&mode_name) {
+            Some(m) => m,
+            None => { eprintln!("unknown --mode `{mode_name}` (read-only | ask | workspace-write | full-access)"); return 2; }
+        }
+    };
+    // No task (or `ai "task"`) = a chat that stays open; --task = one job, then exit.
+    let interactive = args.task.is_none() || args.has("--chat");
     let opts = agent::Options {
         yes,
         interactive,
@@ -509,17 +752,19 @@ fn cmd_agent(args: &Args, cfg: Config) -> i32 {
         verbose: args.has("--verbose"),
     };
     let vt = args.vt_key.clone().or_else(|| std::env::var("VT_API_KEY").ok()).unwrap_or_else(|| cfg.vt_key.clone());
-    let mut a = agent::Agent::new(model, opts, &vt);
+    let mut a = agent::Agent::new(model, opts, &vt).with_config(cfg.clone());
+    a.set_mode(mode);
 
     println!("{}", util::c(BOLD, "polinrider-hunter agent"));
-    println!("{}", util::c(DIM, "  An AI incident responder with this tool in its hands. It reads freely; every change to your\n  machine or repositories is shown to you first and needs your `y`. Type `exit` to stop."));
-    if yes {
-        println!("{}", util::c(YELLOW, "  --yes: mutating actions are pre-approved. Disk wipes and download-and-execute are still refused."));
+    println!("{}", util::c(DIM, "  Malware responder and terminal engineer. Ask for anything on this machine or your repos -\n  investigate, clean, repair branches, edit code, run builds/tests. /help for commands, exit to stop."));
+    match mode {
+        agent::Mode::FullAccess => println!("{}", util::c(YELLOW, "  full-access: changes run without asking. Disk wipes and download-piped-to-shell are still refused.")),
+        agent::Mode::ReadOnly => println!("{}", util::c(DIM, "  read-only: nothing on this machine will be changed.")),
+        agent::Mode::WorkspaceWrite => println!("{}", util::c(DIM, "  workspace-write: file edits inside the workspace run without asking; everything else asks.")),
+        agent::Mode::Ask => {}
     }
     println!();
-    let task = args.task.clone().unwrap_or_else(|| {
-        "Investigate this machine and the project directories for malware and supply-chain compromise. Establish what is present, how it got here (root cause, with evidence), contain and remove it with my approval, verify, then write an incident report and tell me what I still have to do myself.".to_string()
-    });
+    let task = if args.has("--investigate") { agent::DEFAULT_INVESTIGATION.to_string() } else { args.task.clone().unwrap_or_default() };
     match a.run(&task) {
         Ok(summary) => {
             println!();
@@ -541,11 +786,12 @@ fn cmd_report(args: &Args, cfg: Config) -> i32 {
     let dir = config::home().join("reports");
     let _ = std::fs::create_dir_all(&dir);
     // With a key: the agent investigates and writes the report itself.
-    if agent::resolve_key(args.key.as_deref(), &cfg).is_some() && !args.has("--plain") {
+    if llm::resolve_provider(args.provider.as_deref(), &cfg).is_some() && !args.has("--plain") {
         let model = match build_model(args, &cfg) { Ok(m) => m, Err(e) => { eprintln!("{e}"); return 2; } };
         let opts = agent::Options { yes: false, interactive: false, max_steps: args.max_steps.unwrap_or(40), paths, verbose: args.has("--verbose") };
         let vt = std::env::var("VT_API_KEY").unwrap_or_else(|_| cfg.vt_key.clone());
         let mut a = agent::Agent::new(model, opts, &vt);
+        a.set_mode(agent::Mode::ReadOnly);
         println!("{}", util::c(BOLD, "writing an incident report (read-only investigation; nothing will be changed)"));
         let task = "Produce a complete incident report for this machine and the project directories using READ-ONLY tools only (scan, repos_audit, persistence, processes, quarantine_list, list_dir, read_file, run_command with read-only commands, web_search). Do not call clean, remove_persistence, repos_fix or kill_process. Then call write_report with the full report and finish with a 5-line summary.";
         return match a.run(task) {
@@ -557,7 +803,7 @@ fn cmd_report(args: &Args, cfg: Config) -> i32 {
     let md = agent::deterministic_report(&paths);
     let path = dir.join(format!("{}-status.md", util::fmt_stamp(util::now_secs())));
     match std::fs::write(&path, &md) {
-        Ok(()) => { println!("{md}"); println!("{} {}", util::c(GREEN, "saved:"), path.display()); println!("{}", util::c(DIM, "(set a Gemini key with `set-key` for an AI-written root-cause report)")); 0 }
+        Ok(()) => { println!("{md}"); println!("{} {}", util::c(GREEN, "saved:"), path.display()); println!("{}", util::c(DIM, "(set up an AI provider with `polinrider-hunter ai setup` for an AI-written root-cause report)")); 0 }
         Err(e) => { eprintln!("could not write report: {e}"); 1 }
     }
 }
@@ -1637,13 +1883,26 @@ Detects and removes the PolinRider supply-chain malware.
                          deletes the state directory, PATH entry and binary.
   test-notify            Send a notification, to check they reach you.
 
-{b}AI AGENT (human in the loop){r}
-  agent [paths...]       Investigate with a Gemini-powered incident responder that
-                         can scan, read files, walk git history, list processes and
-                         persistence, search the web, look up hashes, run read-only
-                         commands - and, only with your `y`, clean, remove
-                         persistence, repair remote branches or run other commands.
-                         Interactive; --task "…" for one job; --yes pre-approves.
+{b}AI AGENT{r}
+  agent [paths...]       Chat with an AI agent that does real work in your terminal:
+                         malware investigation and cleanup, repairing poisoned
+                         branches, reading/writing/editing files, glob/grep search,
+                         running builds, tests, git and any other command, web
+                         search, hash lookups. Type what you want; /help lists
+                         commands (/provider, /model, /mode, /plan, /status...).
+                         --task "…" runs one job and exits; --investigate starts
+                         the full malware investigation; --mode sets permissions.
+  ai [status]            Show AI providers, which keys are set and which is active.
+  ai setup               Guided setup: pick a provider, paste a key, test it.
+  ai key <provider> <K>  Save a key: anthropic, openai, gemini, openrouter, groq,
+                         deepseek, ollama (no key), custom (any OpenAI-compatible).
+  ai use <provider> [m]  Make a provider (and model) the default. --base-url <url>
+                         for custom endpoints, proxies, LM Studio.
+  ai mode <mode>         Default permission mode: read-only | ask (default) |
+                         workspace-write | full-access.
+  ai test                Send one message to check the key and model work.
+  ai remove <provider>   Forget a stored key.
+  ai "<task>"            Shorthand: start the agent on a task and stay in the chat.
   report [paths...]      Write an incident report to the state dir: AI-written root
                          cause with a key, or a factual status report without one.
   set-key <KEY>          Store a Gemini API key (free at aistudio.google.com/apikey).
@@ -1686,10 +1945,15 @@ Detects and removes the PolinRider supply-chain malware.
   --port <n>             monitor --web: port to listen on (default 8787).
   --no-autostart         install: do not register a login entry.
   --no-guard             install: set everything up but do not start the guard.
-  --yes                  agent: approve mutating tool calls without asking.
+  --yes                  agent: approve mutating tool calls without asking
+                         (same as --mode full-access).
+  --mode <m>             agent: read-only | ask | workspace-write | full-access.
+  --provider <id>        agent/report/ai test: AI provider for this run.
+  --base-url <url>       agent/ai use: endpoint for OpenAI-compatible providers.
+  --investigate          agent: start with the full malware investigation.
   --task <text>          agent: run one task non-interactively, then exit.
-  --model <id>           agent/report/set-key: Gemini model to try first.
-  --key <KEY>            agent/report: Gemini key for this run only.
+  --model <id>           agent/report/ai: model for the active provider.
+  --key <KEY>            agent/report: API key for this run only.
   --max-steps <n>        agent: cap on model turns (default 400 interactive, 60 task).
   --verbose              agent: show every tool result.
   --plain                report: skip the AI even if a key is configured.

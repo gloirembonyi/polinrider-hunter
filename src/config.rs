@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+#[derive(Clone)]
 pub struct Config {
     /// Directories to scan and watch.
     pub paths: Vec<PathBuf>,
@@ -25,6 +26,17 @@ pub struct Config {
     pub gemini_model: String,
     /// VirusTotal API key for the agent's threat_intel tool (or VT_API_KEY).
     pub vt_key: String,
+    /// AI provider for the agent (`anthropic`, `openai`, `gemini`, `openrouter`,
+    /// `groq`, `deepseek`, `ollama`, `custom`); empty = the first with a key.
+    pub ai_provider: String,
+    /// Model for `ai_provider`; empty = that provider's default.
+    pub ai_model: String,
+    /// Endpoint override for OpenAI-compatible providers (`custom`, a proxy, LM Studio).
+    pub ai_base_url: String,
+    /// `(provider, key)` for every provider except Gemini, which keeps `gemini_key`.
+    pub ai_keys: Vec<(String, String)>,
+    /// Default agent permission mode: read-only | ask | workspace-write | full-access.
+    pub agent_mode: String,
 }
 
 impl Default for Config {
@@ -40,6 +52,11 @@ impl Default for Config {
             gemini_key: String::new(),
             gemini_model: String::new(),
             vt_key: String::new(),
+            ai_provider: String::new(),
+            ai_model: String::new(),
+            ai_base_url: String::new(),
+            ai_keys: Vec::new(),
+            agent_mode: String::new(),
         }
     }
 }
@@ -168,10 +185,35 @@ impl Config {
                 "gemini_key" => cfg.gemini_key = v.to_string(),
                 "gemini_model" => cfg.gemini_model = v.to_string(),
                 "vt_key" => cfg.vt_key = v.to_string(),
+                "ai_provider" => cfg.ai_provider = v.to_string(),
+                "ai_model" => cfg.ai_model = v.to_string(),
+                "ai_base_url" => cfg.ai_base_url = v.to_string(),
+                "agent_mode" => cfg.agent_mode = v.to_string(),
+                other if other.ends_with("_key") && !v.is_empty() => {
+                    let id = other.trim_end_matches("_key").to_ascii_lowercase();
+                    cfg.set_ai_key(&id, v);
+                }
                 _ => {}
             }
         }
         cfg
+    }
+
+    /// Store (or, with an empty key, remove) the key for an AI provider.
+    pub fn set_ai_key(&mut self, provider: &str, key: &str) {
+        let id = provider.trim().to_ascii_lowercase();
+        if id == "gemini" {
+            self.gemini_key = key.trim().to_string();
+            return;
+        }
+        if id == "vt" {
+            self.vt_key = key.trim().to_string();
+            return;
+        }
+        self.ai_keys.retain(|(p, _)| *p != id);
+        if !key.trim().is_empty() {
+            self.ai_keys.push((id, key.trim().to_string()));
+        }
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -194,6 +236,14 @@ impl Config {
             if !self.gemini_key.is_empty() { s.push_str(&format!("gemini_key = {}\n", self.gemini_key)); }
             if !self.gemini_model.is_empty() { s.push_str(&format!("gemini_model = {}\n", self.gemini_model)); }
             if !self.vt_key.is_empty() { s.push_str(&format!("vt_key = {}\n", self.vt_key)); }
+        }
+        if !self.ai_provider.is_empty() || !self.ai_model.is_empty() || !self.ai_base_url.is_empty() || !self.ai_keys.is_empty() || !self.agent_mode.is_empty() {
+            s.push_str("\n# AI providers (`polinrider-hunter ai`). Keys can also come from ANTHROPIC_API_KEY, OPENAI_API_KEY, ...\n");
+            if !self.ai_provider.is_empty() { s.push_str(&format!("ai_provider = {}\n", self.ai_provider)); }
+            if !self.ai_model.is_empty() { s.push_str(&format!("ai_model = {}\n", self.ai_model)); }
+            if !self.ai_base_url.is_empty() { s.push_str(&format!("ai_base_url = {}\n", self.ai_base_url)); }
+            if !self.agent_mode.is_empty() { s.push_str(&format!("agent_mode = {}\n", self.agent_mode)); }
+            for (id, k) in &self.ai_keys { s.push_str(&format!("{id}_key = {k}\n")); }
         }
         std::fs::write(config_path(), s)
     }

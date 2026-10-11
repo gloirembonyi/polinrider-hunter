@@ -29,6 +29,10 @@ pub trait Model {
     /// Returns the model's `content` object (`{role, parts:[…]}`).
     fn generate(&mut self, system: &str, contents: &[Json], tools: &Json) -> Result<Json, String>;
     fn name(&self) -> String;
+    /// (input, output) tokens of the last call, when the provider reports them.
+    fn usage(&self) -> Option<(u64, u64)> {
+        None
+    }
 }
 
 pub struct Gemini {
@@ -64,13 +68,17 @@ impl Gemini {
 
 impl Model for Gemini {
     fn name(&self) -> String {
-        self.models.get(self.current).cloned().unwrap_or_default()
+        format!("gemini/{}", self.models.get(self.current).cloned().unwrap_or_default())
+    }
+
+    fn usage(&self) -> Option<(u64, u64)> {
+        self.last_usage
     }
 
     fn generate(&mut self, system: &str, contents: &[Json], tools: &Json) -> Result<Json, String> {
         let body = Json::obj(vec![
             ("systemInstruction", Json::obj(vec![("parts", Json::arr(vec![Json::obj(vec![("text", Json::str(system))])]))])),
-            ("contents", Json::Arr(contents.to_vec())),
+            ("contents", Json::Arr(contents.iter().map(gemini_turn).collect())),
             ("tools", Json::arr(vec![Json::obj(vec![("functionDeclarations", tools.clone())])])),
             ("toolConfig", Json::obj(vec![("functionCallingConfig", Json::obj(vec![("mode", Json::str("AUTO"))]))])),
             ("generationConfig", Json::obj(vec![("temperature", Json::Num(0.2)), ("maxOutputTokens", Json::Num(8192.0))])),
@@ -115,6 +123,35 @@ impl Model for Gemini {
     }
 }
 
+/// One shared-history turn in the exact shape Gemini accepts.
+///
+/// The history also carries other providers' bookkeeping (call ids, a
+/// provider tag, raw content blocks to replay); Gemini rejects unknown fields,
+/// so only the role and the three part kinds it knows go out.
+fn gemini_turn(turn: &Json) -> Json {
+    let role = if turn.str_of("role") == "model" { "model" } else { "user" };
+    let parts: Vec<Json> = turn
+        .get("parts")
+        .and_then(|p| p.as_arr())
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|p| {
+            if let Some(t) = p.get("text") {
+                Some(Json::obj(vec![("text", t.clone())]))
+            } else if let Some(c) = p.get("functionCall") {
+                Some(Json::obj(vec![("functionCall", Json::obj(vec![("name", Json::str(c.str_of("name"))), ("args", c.get("args").cloned().unwrap_or(Json::Obj(vec![])))]))]))
+            } else {
+                p.get("functionResponse").map(|r| {
+                    Json::obj(vec![("functionResponse", Json::obj(vec![("name", Json::str(r.str_of("name"))), ("response", r.get("response").cloned().unwrap_or(Json::Obj(vec![])))]))])
+                })
+            }
+        })
+        .collect();
+    let parts = if parts.is_empty() { vec![Json::obj(vec![("text", Json::str("(continue)"))])] } else { parts };
+    Json::obj(vec![("role", Json::str(role)), ("parts", Json::Arr(parts))])
+}
+
 // ---------------------------------------------------------------------------
 // HTTP via curl
 // ---------------------------------------------------------------------------
@@ -132,10 +169,16 @@ fn temp_file(prefix: &str, contents: &str) -> Result<PathBuf, String> {
 /// POST a JSON body. Returns the response body; a non-2xx status still returns
 /// the body (Gemini puts the error description there).
 pub fn http_post_json(url: &str, headers: &[(&str, &str)], body: &str) -> Result<String, String> {
+    http_post_json_timeout(url, headers, body, 180)
+}
+
+/// `http_post_json` with a caller-chosen ceiling: an agentic turn on a large
+/// model can think for minutes.
+pub fn http_post_json_timeout(url: &str, headers: &[(&str, &str)], body: &str, max_time_secs: u32) -> Result<String, String> {
     let file = temp_file("prh-req", body)?;
     let file_arg = format!("@{}", file.display());
     let mut args: Vec<String> = vec![
-        "-sS".into(), "--max-time".into(), "180".into(), "-X".into(), "POST".into(),
+        "-sS".into(), "--max-time".into(), max_time_secs.to_string(), "-X".into(), "POST".into(),
         "-H".into(), "Content-Type: application/json".into(),
     ];
     for (k, v) in headers {
@@ -265,9 +308,9 @@ mod tests {
     #[test]
     fn fallback_chain_starts_with_the_preferred_model() {
         let g = Gemini::new("k", Some("gemini-3.8-flash-cyber"));
-        assert_eq!(g.name(), "gemini-3.8-flash-cyber");
+        assert_eq!(g.name(), "gemini/gemini-3.8-flash-cyber");
         assert!(g.models.contains(&"gemini-2.5-flash-lite".to_string()));
         let d = Gemini::new("k", None);
-        assert_eq!(d.name(), DEFAULT_MODEL);
+        assert_eq!(d.name(), format!("gemini/{DEFAULT_MODEL}"));
     }
 }

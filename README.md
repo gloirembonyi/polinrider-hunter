@@ -262,23 +262,30 @@ install [paths...]     Watch these directories, install a pre-commit hook in eac
 status                 Where everything lives; whether the guard is alive.
 uninstall              Stop the guard, remove the hooks.
 
-agent [paths...]       AI investigation with human approval of every change
-                       (needs a free Gemini key: `set-key <KEY>`). --task "…"
-                       for one job, --yes to pre-approve.
-report [paths...]      Written incident report (AI root-cause with a key).
-set-key <KEY>          Store the Gemini key (--model, --vt-key optional).
+agent [paths...]       Chat with an AI agent that does real work in your terminal:
+                       malware response, branch repair, file edits, builds,
+                       tests, any command - every change shown first by default.
+                       --task "…" for one job, --mode read-only|ask|
+                       workspace-write|full-access, --investigate.
+ai [setup|key|use|mode|test|remove]
+                       AI providers: anthropic (Claude), openai, gemini (free),
+                       openrouter, groq, deepseek, ollama (local), any
+                       OpenAI-compatible endpoint. `ai setup` is guided.
+report [paths...]      Written incident report (AI root-cause with a provider).
+set-key <KEY>          Store a Gemini key (older shortcut for `ai key gemini`).
 scan [paths...]        Report only. Exit 1 if anything critical.
 clean [paths...]       Scan, then remove payloads. --dry-run to preview.
 repos [paths...]       Fetch and audit every branch, local and remote-tracking,
                        plus each repo's git config and hooks. --fix repairs a
-                       poisoned remote branch (see below); --history audits
-                       old commits too, not just the tips.
+                       poisoned remote branch (see below); --excise removes the
+                       poisoned commit itself, no local copy needed; --history
+                       audits old commits too, not just the tips.
 procs                  List hidden stage-2 processes. --kill stops them.
 protect / unprotect    Just the pre-commit hook.
 quarantine             List the originals kept aside.
 ```
 
-Flags: `--json`, `--dry-run`, `--quick`, `--no-fetch`, `--history`, `--kill`, `--drives`,
+Flags: `--json`, `--dry-run`, `--quick`, `--no-fetch`, `--history`, `--fix`, `--excise`, `--kill`, `--drives`,
 `--interval <secs>`, `--no-autostart`, `--no-color`.
 
 ### Getting it off the machine entirely
