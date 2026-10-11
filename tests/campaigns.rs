@@ -542,3 +542,123 @@ fn history_finds_the_payload_a_clean_tip_hides() {
     // The detector in the same history is not counted as a payload.
     assert!(!out.contains("check-malware.mjs"), "a detector is not a payload: {out}");
 }
+
+/// The 2026-10 shape on every branch of 160 repositories: the victim's commit
+/// replayed with the payload (plus bookkeeping and an armed `.vscode`), then a
+/// cleanup commit on top. Nobody has a clean local branch to push, and the tip
+/// already audits clean - yet the poisoned commit is still in every pull.
+/// `--excise` must rebuild the original commit from the remote alone.
+#[test]
+fn excise_removes_a_poisoned_commit_hidden_under_a_cleanup() {
+    let sb = Sandbox::new("excise");
+    let bare = sb.root.join("origin.git");
+    let a = sb.root.join("a");
+    let b = sb.root.join("b");
+    std::fs::create_dir_all(&bare).unwrap();
+    std::fs::create_dir_all(&a).unwrap();
+    git(&bare, &["init", "-q", "--bare", "-b", "main"]);
+    git(&a, &["init", "-q", "-b", "main"]);
+    let clean = "const config = { plugins: {} };\nexport default config;\n";
+    std::fs::write(a.join("postcss.config.mjs"), clean).unwrap();
+    std::fs::write(a.join(".gitignore"), "node_modules\n").unwrap();
+    git(&a, &["add", "."]);
+    git(&a, &["commit", "-q", "-m", "init"]);
+    git(&a, &["remote", "add", "origin", bare.to_str().unwrap()]);
+    git(&a, &["push", "-q", "-u", "origin", "main"]);
+    let base = git(&a, &["rev-parse", "HEAD"]);
+
+    // Attacker: the victim's next commit, replayed with everything attached.
+    git(&sb.root, &["clone", "-q", bare.to_str().unwrap(), "b"]);
+    std::fs::write(b.join("feature.ts"), "export const x = 1;\n").unwrap();
+    let pad: String = std::iter::repeat('\t').take(500).collect();
+    std::fs::write(b.join("postcss.config.mjs"), format!("{}{pad}global.i = 'A8-2941';global.r=require;\n", clean.trim_end())).unwrap();
+    std::fs::write(b.join("branch_structure.json"), "{\"default_branch\": \"main\"}\n").unwrap();
+    std::fs::write(b.join(".gitignore"), "node_modules\nbranch_structure.json\ntemp_auto_push.bat\n").unwrap();
+    std::fs::create_dir_all(b.join(".vscode")).unwrap();
+    std::fs::write(
+        b.join(".vscode/settings.json"),
+        "{\n  \"task.allowAutomaticTasks\": true,\n  \"tasks\": { \"label\": \"lint\", \"command\": \"npm run lint\", \"runOn\": \"folderOpen\" }\n}\n",
+    )
+    .unwrap();
+    // -f: the attacker's own .gitignore entry would hide its manifest otherwise.
+    git(&b, &["add", "-f", "."]);
+    git(&b, &["commit", "-q", "-m", "feat: x"]);
+    git(&b, &["push", "-q", "origin", "main"]);
+    // A cleanup on top: the tip is clean again, the poisoned commit is not.
+    std::fs::write(b.join("postcss.config.mjs"), clean).unwrap();
+    git(&b, &["rm", "-q", "branch_structure.json"]);
+    git(&b, &["commit", "-q", "-a", "-m", "security: remove injected PolinRider malware"]);
+    git(&b, &["push", "-q", "origin", "main"]);
+    let poisoned_tip = git(&bare, &["rev-parse", "main"]);
+
+    // The armed .vscode survived the cleanup, so the tip is still infected.
+    git(&a, &["fetch", "-q", "origin"]);
+    let (code, out) = run_hunter(&["repos", "--no-fetch", a.to_str().unwrap()]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains(".vscode/settings.json"), "armed autorun is found on the branch: {out}");
+
+    // Dry run changes nothing.
+    let (_, dry) = run_hunter(&["repos", "--no-fetch", "--excise", "--dry-run", a.to_str().unwrap()]);
+    assert!(dry.contains("would replace origin/main"), "{dry}");
+    assert_eq!(git(&bare, &["rev-parse", "main"]), poisoned_tip);
+
+    let (code, out) = run_hunter(&["repos", "--no-fetch", "--excise", a.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("poisoned commit removed"), "{out}");
+    // One commit on the real parent, with the victim's message and work...
+    assert_eq!(git(&bare, &["log", "-1", "--format=%s", "main"]), "feat: x");
+    assert_eq!(git(&bare, &["rev-parse", "main^"]), base);
+    assert_eq!(git(&bare, &["show", "main:feature.ts"]), "export const x = 1;");
+    // ...and none of the infection.
+    assert_eq!(git(&bare, &["show", "main:postcss.config.mjs"]), clean.trim_end());
+    assert_eq!(git(&bare, &["show", "main:.gitignore"]), "node_modules");
+    let files = git(&bare, &["ls-tree", "-r", "--name-only", "main"]);
+    assert!(!files.contains("branch_structure.json") && !files.contains(".vscode"), "{files}");
+
+    // Idempotent.
+    let (code, out) = run_hunter(&["repos", "--no-fetch", "--excise", a.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("No poisoned commit"), "{out}");
+}
+
+#[test]
+fn excise_refuses_to_drop_real_work_made_after_the_infection() {
+    let sb = Sandbox::new("exciseblocked");
+    let bare = sb.root.join("origin.git");
+    let a = sb.root.join("a");
+    std::fs::create_dir_all(&bare).unwrap();
+    std::fs::create_dir_all(&a).unwrap();
+    git(&bare, &["init", "-q", "--bare", "-b", "main"]);
+    git(&a, &["init", "-q", "-b", "main"]);
+    std::fs::write(a.join("postcss.config.mjs"), "export default {};\n").unwrap();
+    git(&a, &["add", "."]);
+    git(&a, &["commit", "-q", "-m", "init"]);
+    let pad: String = std::iter::repeat(' ').take(500).collect();
+    std::fs::write(a.join("postcss.config.mjs"), format!("export default {{}};{pad}global.i = 'A9-4221';\n")).unwrap();
+    git(&a, &["commit", "-q", "-a", "-m", "chore: config"]);
+    std::fs::write(a.join("feature.js"), "export const y = 2;\n").unwrap();
+    git(&a, &["add", "."]);
+    git(&a, &["commit", "-q", "-m", "feat: real work on top"]);
+    git(&a, &["remote", "add", "origin", bare.to_str().unwrap()]);
+    git(&a, &["push", "-q", "-u", "origin", "main"]);
+    let tip = git(&bare, &["rev-parse", "main"]);
+
+    let (code, out) = run_hunter(&["repos", "--no-fetch", "--excise", a.to_str().unwrap()]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("BLOCKED") && out.contains("real work landed after the infection"), "{out}");
+    assert_eq!(git(&bare, &["rev-parse", "main"]), tip, "nothing was pushed");
+}
+
+#[test]
+fn an_unarmed_or_hardened_folder_open_task_is_not_an_infection() {
+    use polinrider_hunter::gitscan::armed_autorun;
+    // A dev watcher that waits for the user to allow automatic tasks.
+    assert!(!armed_autorun(br#"{"tasks":[{"label":"dev","command":"npm run dev","runOptions":{"runOn":"folderOpen"}}]}"#));
+    // The hardened setting.
+    assert!(!armed_autorun(br#"{"task.allowAutomaticTasks": "off", "tasks": {"runOn": "folderOpen", "command": "npm run dev"}}"#));
+    // No folderOpen at all.
+    assert!(!armed_autorun(br#"{"task.allowAutomaticTasks": true}"#));
+    // Armed: switched on, or running a script hidden as a font.
+    assert!(armed_autorun(br#"{"task.allowAutomaticTasks": true, "tasks": {"runOn": "folderOpen", "command": "npm run lint"}}"#));
+    assert!(armed_autorun(br#"{"tasks":[{"command":"node ./public/fonts/fa-solid-300.llf","runOptions":{"runOn":"folderOpen"}}]}"#));
+}

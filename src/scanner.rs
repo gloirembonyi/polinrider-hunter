@@ -197,7 +197,8 @@ pub const MALICIOUS_PACKAGES: &[&str] = &[
 ];
 
 /// Data files that should never contain executable code.
-const DISGUISE_EXTS: &[&str] = &["woff2", "woff", "ttf", "otf", "eot", "dict", "dat", "bin"];
+// `llf`/`lkf`: the autorun variant's 2026-09 payload names (`fa-solid-300.llf`).
+const DISGUISE_EXTS: &[&str] = &["woff2", "woff", "ttf", "otf", "eot", "llf", "lkf", "dict", "dat", "bin"];
 
 /// Known third-party malware gates. They contain signatures by design.
 const KNOWN_DETECTORS: &[&str] = &[
@@ -325,6 +326,11 @@ const FONT_MAGIC: &[&[u8]] = &[
     b"ttcf",
     b"OTTO",           // opentype
 ];
+
+/// Whether `data` begins with a real font's magic bytes.
+pub fn looks_like_font(data: &[u8]) -> bool {
+    FONT_MAGIC.iter().any(|m| data.starts_with(m))
+}
 
 /// A font that is not a font.
 ///

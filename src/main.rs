@@ -789,6 +789,79 @@ fn cmd_repos(args: &Args, cfg: &Config, json: bool) -> i32 {
             }
         }
     }
+    // --excise: cut the poisoned commit out of each remote branch's recent
+    // history, even with no clean local branch and even under a cleanup commit.
+    let mut excised_ok = 0usize;
+    let mut excise_failed = 0usize;
+    if args.has("--excise") {
+        let mut plans: Vec<gitscan::ExcisePlan> = Vec::new();
+        for p in &paths {
+            if gitscan::is_repo(p) {
+                plans.extend(gitscan::plan_excisions(p));
+            }
+        }
+        if !json {
+            println!();
+            if plans.is_empty() {
+                println!(
+                    "{}",
+                    util::c(GREEN, &format!("No poisoned commit in the last {} commits of any remote branch.", gitscan::EXCISE_DEPTH))
+                );
+            } else {
+                println!("{}", util::c(BOLD, if dry { "poisoned commits that --excise would remove" } else { "removing poisoned commits" }));
+            }
+        }
+        for mut plan in plans {
+            let name = format!("{}/{}", plan.remote, plan.branch);
+            match gitscan::apply_excise(&mut plan, dry) {
+                Ok(msg) => {
+                    excised_ok += 1;
+                    if json {
+                        println!(
+                            "{{\"type\":\"excise\",\"repo\":\"{}\",\"branch\":\"{}\",\"ok\":true,\"poisoned\":\"{}\",\"new\":\"{}\",\"dry\":{}}}",
+                            util::json_escape(&plan.repo.display().to_string()),
+                            util::json_escape(&name),
+                            plan.poisoned,
+                            plan.rebuilt.clone().unwrap_or_default(),
+                            dry
+                        );
+                    } else {
+                        println!("  {} {} {}", util::c(GREEN, if dry { "dry-run " } else { "excised " }), util::c(DIM, &plan.repo.display().to_string()), msg);
+                        println!("           {} {} restored: {}", util::c(DIM, "poisoned:"), &plan.poisoned[..10.min(plan.poisoned.len())], plan.restored.join(", "));
+                    }
+                }
+                Err(e) => {
+                    excise_failed += 1;
+                    if json {
+                        println!(
+                            "{{\"type\":\"excise\",\"repo\":\"{}\",\"branch\":\"{}\",\"ok\":false,\"error\":\"{}\"}}",
+                            util::json_escape(&plan.repo.display().to_string()),
+                            util::json_escape(&name),
+                            util::json_escape(&e)
+                        );
+                    } else {
+                        println!("  {} {} {}: {}", util::c(YELLOW, "BLOCKED "), util::c(DIM, &plan.repo.display().to_string()), name, e);
+                    }
+                }
+            }
+        }
+    }
+    if args.has("--excise") && !dry {
+        if excise_failed > 0 {
+            return 1;
+        }
+        if excised_ok > 0 {
+            // apply_excise re-audited each pushed tip. Local branches may still
+            // point at the old poisoned commits, so judge the remote refs only.
+            let remaining: Vec<_> = paths
+                .iter()
+                .filter(|p| gitscan::is_repo(p))
+                .flat_map(|p| gitscan::scan_repo(p, false))
+                .filter(|h| h.git_ref.starts_with("refs/remotes/"))
+                .collect();
+            return if remaining.is_empty() { 0 } else { 1 };
+        }
+    }
     if !json && !all.is_empty() {
         println!();
         if fix && !dry {
@@ -1584,6 +1657,9 @@ Detects and removes the PolinRider supply-chain malware.
                          remote-tracking, without pulling or checking out; also
                          audits each repo's git config and hooks. --fix pushes
                          your clean local branch over a poisoned remote branch;
+                         --excise removes the poisoned commit itself from each
+                         remote branch (no local copy needed; cleanup commits
+                         are folded away; original message/author/date kept);
                          --history also audits old commits, not just the tips.
   procs                  List hidden stage-2 processes. --kill stops them.
   persistence            Check shell profiles, cron and login agents for a
