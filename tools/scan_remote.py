@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# POLINRIDER-HUNTER-DETECTOR: this tool names malware signatures to find them. Not malware.
 """Scan EVERY branch of every GitHub repo of an owner/org for PolinRider, without full clones.
 
   python -u tools/scan_remote.py --owner gloirembonyi --owner Global-Kwik-Koders [--cache DIR] [--jobs 4]

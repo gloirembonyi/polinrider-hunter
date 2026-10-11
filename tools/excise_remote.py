@@ -1,3 +1,4 @@
+# POLINRIDER-HUNTER-DETECTOR: this tool names malware signatures to find them. Not malware.
 """excise_remote.py - replace (poisoned twin + cleanup) on every branch of an owner's repos with the clean commit.
 
 For each branch whose tip T is the 2026-10-11 "security: remove injected PolinRider malware"

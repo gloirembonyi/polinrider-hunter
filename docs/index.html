@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>polinrider-hunter - find and remove the PolinRider malware</title>
-<meta name="description" content="A single 397 KB binary that detects and removes the PolinRider supply-chain malware from developer machines and git repositories, then keeps watching. Windows, macOS and Linux.">
+<meta name="description" content="One small binary that finds and removes the PolinRider supply-chain malware from developer machines and git repositories - including poisoned commits on every branch - keeps watching, and puts an AI incident responder in your terminal. Windows, macOS and Linux.">
 <meta name="color-scheme" content="dark light">
 <meta property="og:title" content="polinrider-hunter">
-<meta property="og:description" content="Find and remove the PolinRider supply-chain malware. One binary, no dependencies, runs in the background.">
+<meta property="og:description" content="Find and remove the PolinRider supply-chain malware - on your machine, in your repositories and in their git history. One binary, no dependencies, an AI agent built in.">
 <meta property="og:type" content="website">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -30,14 +30,15 @@
               stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
       <span class="brand__name">polinrider&#8209;hunter</span>
-      <span class="brand__ver">v1.0.0</span>
+      <span class="brand__ver">v1.2.0</span>
     </a>
     <nav class="nav__links">
       <a href="#threat">The threat</a>
       <a href="#detection">Detection</a>
       <a href="#techniques">Coverage</a>
+      <a href="#remotes">Repositories</a>
+      <a href="#agent">AI agent</a>
       <a href="#guard">The guard</a>
-      <a href="#watching">Watching</a>
       <a href="#commands">Commands</a>
       <a href="#install">Install</a>
       <a href="https://github.com/gloirembonyi/polinrider-hunter" rel="noopener">Source</a>
@@ -58,9 +59,10 @@
   <div class="wrap">
     <div class="badge-row">
       <span class="badge badge--ok"><span class="dot"></span>Windows &middot; macOS &middot; Linux</span>
-      <span class="badge">Single binary, under 500&nbsp;KB</span>
+      <span class="badge">Single binary, under 1&nbsp;MB</span>
       <span class="badge">Zero dependencies</span>
-      <span class="badge">114 tests</span>
+      <span class="badge">AI agent built in</span>
+      <span class="badge">172 tests</span>
     </div>
 
     <h1 class="text-glow">The malware that<br>kept coming back.</h1>
@@ -71,7 +73,9 @@
       blockchain and leaves a hidden interpreter running long after the build ends.
       This sweeps your <strong>whole computer</strong> for it - not one project,
       every file under your home directory, and every drive if you ask - removes
-      what it finds, and keeps watching.
+      what it finds, and keeps watching. It repairs the <strong>branches on GitHub</strong>
+      the attacker re-pushed, down to the poisoned commits in their history, and ships
+      an <strong>AI agent</strong> you can simply ask to do the rest.
     </p>
 
     <div class="cta-row">
@@ -82,7 +86,8 @@
           <path d="M5 12h14M13 6l6 6-6 6"/>
         </svg>
       </a>
-      <a class="btn" href="#threat">Understand the attack</a>
+      <a class="btn" href="#remotes">Repair your repositories</a>
+      <a class="btn" href="#agent">Meet the agent</a>
     </div>
   </div>
 </section>
@@ -126,7 +131,7 @@ irm <span data-origin>https://gloirembonyi.github.io/polinrider-hunter</span>/in
             <button class="copy" type="button" aria-label="Copy command"></button>
           </div>
           <p class="pane__note">
-            Downloads a prebuilt 397&nbsp;KB binary - nothing to compile. Installs to
+            Downloads a prebuilt binary (under 1&nbsp;MB) - nothing to compile. Installs to
             <code>%LOCALAPPDATA%\Programs\polinrider-hunter</code> and adds it to your
             user <code>PATH</code>. No administrator rights needed.
           </p>
@@ -278,6 +283,39 @@ polinrider-hunter status</code></pre>
           A hidden interpreter with no console and no parent, which outlives the build
           that started it. <code>require</code> and <code>module</code> are handed
           across through globals, so stage 2 has the full run of Node.
+        </p>
+      </div>
+
+      <div class="panel">
+        <span class="step__num">05 - PROPAGATION</span>
+        <h3>It re-pushes your own commits</h3>
+        <p class="small">
+          With a stolen GitHub credential it rewrites your latest commit - same message,
+          same author date, different hash - with the payload, a <code>config.bat</code>
+          or <code>branch_structure.json</code>, and <code>.gitignore</code> lines that
+          hide them. Then it force-pushes that twin to <strong>every branch of every
+          repository</strong> the token can reach.
+        </p>
+        <p class="small">
+          Your editor shows it as "1 outgoing, 2 incoming" on every project. A cleanup
+          commit on top makes the tip clean - and leaves the poisoned twin in history,
+          the commit everyone still pulls.
+        </p>
+      </div>
+
+      <div class="panel">
+        <span class="step__num">06 - EXECUTION ON OPEN</span>
+        <h3>Opening the folder runs it</h3>
+        <p class="small">
+          The autorun variant ships a <code>.vscode</code> task with
+          <code>"runOn": "folderOpen"</code> and switches
+          <code>task.allowAutomaticTasks</code> on, so the moment a fresh clone is opened
+          in VS Code or Cursor, <code>node</code> runs a script saved as a font -
+          <code>public/fonts/fa-solid-300.llf</code>.
+        </p>
+        <p class="small">
+          No build, no install, no prompt. That is how the machine this tool was written
+          on was re-infected in October 2026: clone, open, compromised in three seconds.
         </p>
       </div>
     </div>
@@ -524,6 +562,58 @@ polinrider-hunter status</code></pre>
             <td>BOM detected, text decoded</td>
             <td><span class="tag tag--manual">reported</span></td>
           </tr>
+          <tr>
+            <td>Poisoned twin of your own commit force-pushed to a remote branch</td>
+            <td>branch audit straight from the object database</td>
+            <td><span class="tag tag--auto">repaired</span></td>
+          </tr>
+          <tr>
+            <td>The same twin hidden <em>under</em> a later cleanup commit</td>
+            <td>first-parent walk for an infected commit on a clean parent</td>
+            <td><span class="tag tag--auto">excised</span></td>
+          </tr>
+          <tr>
+            <td>Armed <code>.vscode</code> autorun on a <em>branch</em>: <code>folderOpen</code> + automatic tasks on, or a task running a hidden script</td>
+            <td>both halves together - either alone is honest</td>
+            <td><span class="tag tag--auto">excised</span></td>
+          </tr>
+          <tr>
+            <td><code>config.bat</code>, <code>branch_structure.json</code> on a branch, and <code>.gitignore</code> lines hiding them</td>
+            <td>filename; ignore-file diff against the parent</td>
+            <td><span class="tag tag--auto">excised</span></td>
+          </tr>
+          <tr>
+            <td>Script saved as <code>.llf</code> / <code>.lkf</code> / <code>.woff2</code> and run by such a task</td>
+            <td>font magic bytes + referenced by the armed task</td>
+            <td><span class="tag tag--auto">excised</span></td>
+          </tr>
+          <tr>
+            <td>AppData loader families: <code>tg14xq.js</code> + <code>\VSCodeUpdater</code> task, fake-NGEN Python implant + Run key</td>
+            <td>campaign markers; persistence keyed on the shim's <em>contents</em></td>
+            <td><span class="tag tag--auto">removed</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 style="margin-top:38px">Beyond PolinRider: the rest of 2026</h3>
+    <p class="small muted" style="margin-bottom:16px">
+      The same machinery, pointed at the other campaigns that target developers.
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th style="width:190px">Campaign</th><th>Hides as</th><th style="width:150px">Action</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>npm-loader (<code>runtimedev-link</code>)</td><td>Startup <code>.vbs</code> running <code>npx -y runtimedev-link --token</code>, an <code>agent.env</code>, a task XML</td><td><span class="tag tag--auto">removed</span></td></tr>
+          <tr><td>Shai-Hulud v1/v2</td><td><code>postinstall: node bundle.js</code>, <code>setup_bun.js</code>, TruffleHog, a self-propagating workflow</td><td><span class="tag tag--manual">reported</span></td></tr>
+          <tr><td>GlassWorm</td><td>thousands of invisible Unicode variation selectors on a "blank" line, decoded at runtime, Solana C2</td><td><span class="tag tag--auto">line cut</span></td></tr>
+          <tr><td>Contagious Interview</td><td>a take-home repo pairing a global keylogger with a screenshotter, plus a <code>folderOpen</code> task</td><td><span class="tag tag--manual">reported</span></td></tr>
+          <tr><td>Git config injection / GitSpawn</td><td><code>core.fsmonitor</code>, <code>core.pager</code>, <code>credential.helper&nbsp;!cmd</code>, hooks, nested bare repositories</td><td><span class="tag tag--auto">unset</span></td></tr>
+          <tr><td>Install-script droppers</td><td><code>curl | sh</code>, <code>node -e</code>, base64 in <code>preinstall</code>/<code>postinstall</code></td><td><span class="tag tag--manual">reported</span></td></tr>
+          <tr><td>Pwn-request workflows</td><td><code>pull_request_target</code> that checks out the pull request's head</td><td><span class="tag tag--manual">reported</span></td></tr>
+          <tr><td>ClickFix</td><td><code>mshta</code> / <code>powershell -enc … | iex</code> pasted into Win+R by a fake CAPTCHA</td><td><span class="tag tag--manual">evidence</span></td></tr>
         </tbody>
       </table>
     </div>
@@ -604,6 +694,297 @@ polinrider-hunter status</code></pre>
 </section>
 
 <!-- ---------------------------------------------------------------------- -->
+<section id="remotes" class="reveal">
+  <div class="wrap">
+    <p class="eyebrow">Your repositories</p>
+    <h2>Clean branches, clean history</h2>
+    <p class="lede" style="margin-bottom:30px">
+      Your working tree can be spotless while every branch on GitHub carries the payload.
+      <code>git status</code> shows nothing and <code>git pull</code> would bring it all
+      back. So the audit reads the branches themselves - and the repair goes as far as
+      the commits in their history.
+    </p>
+
+    <div class="panel" style="margin-bottom:26px">
+      <p class="eyebrow" style="margin-bottom:18px">One branch, before and after <code>repos --excise</code></p>
+      <div class="graph">
+        <div class="graph__row">
+          <span class="evasion__tag">your clone</span>
+          <div class="graph__line">
+            <span class="commit">a41c… earlier work</span><span class="graph__edge"></span>
+            <span class="commit">3f9a… feat: live updates</span>
+          </div>
+        </div>
+        <div class="graph__row">
+          <span class="evasion__tag" style="color:var(--danger)">on GitHub</span>
+          <div class="graph__line">
+            <span class="commit">a41c… earlier work</span><span class="graph__edge"></span>
+            <span class="commit commit--bad">c71e… feat: live updates + payload</span><span class="graph__edge"></span>
+            <span class="commit commit--fix">e05b… security: remove malware</span>
+          </div>
+        </div>
+        <div class="graph__row">
+          <span class="evasion__tag" style="color:var(--ok)">after</span>
+          <div class="graph__line">
+            <span class="commit">a41c… earlier work</span><span class="graph__edge"></span>
+            <span class="commit commit--ok">3f9a… feat: live updates</span>
+          </div>
+        </div>
+      </div>
+      <p class="small muted" style="margin:16px 0 0">
+        The red commit is the attacker's twin of yours: same message, same date. The
+        amber cleanup made the tip clean but left it underneath. After the repair the
+        branch holds your original commit again - message, author and dates intact.
+      </p>
+    </div>
+
+    <div class="grid grid--2" style="margin-bottom:24px">
+      <div class="panel">
+        <span class="step__num">AUDIT</span>
+        <h3>Every branch, nothing checked out</h3>
+        <p class="small">
+          <code>repos</code> fetches and audits every local and remote-tracking branch
+          straight out of the object database - no pull, no checkout, nothing written
+          to your working tree. Content, file names, armed <code>.vscode</code> autoruns
+          and fonts that are really scripts, plus each repository's git config and hooks.
+        </p>
+      </div>
+      <div class="panel">
+        <span class="step__num">--FIX</span>
+        <h3>Your clean branch, pushed back</h3>
+        <p class="small">
+          When a clean local branch tracks the poisoned one, <code>--fix</code> pushes it
+          with <code>--force-with-lease</code> pinned to the exact commit it audited - and
+          only when every extra commit on the remote <em>is</em> the infection. Anything
+          that looks like real work gets <strong>BLOCKED</strong>, with the file names.
+        </p>
+      </div>
+      <div class="panel">
+        <span class="step__num">--EXCISE</span>
+        <h3>The poisoned commit, cut out</h3>
+        <p class="small">
+          No local copy needed. It finds the commit that brought the payload in, rebuilds
+          it with every infected file restored from its parent, under the original
+          message, author and dates, and folds cleanup commits away. It refuses when real
+          work landed after the infection, and never pushes a commit that still audits
+          infected.
+        </p>
+      </div>
+      <div class="panel">
+        <span class="step__num">--HISTORY</span>
+        <h3>Older copies, still in the object database</h3>
+        <p class="small">
+          A clean tip is not a clean repository. <code>--history</code> walks every blob
+          reachable from any ref, names the commits holding each payload, and prints the
+          <code>git filter-repo</code> command that purges them for good.
+        </p>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div>
+        <h3>One repository</h3>
+        <div class="code">
+          <pre><code><span class="c-cmt"># what is on every branch?</span>
+polinrider-hunter repos ~/work/app
+
+<span class="c-cmt"># show the repair, then do it</span>
+polinrider-hunter repos --excise --dry-run ~/work/app
+polinrider-hunter repos --excise ~/work/app</code></pre>
+          <button class="copy" type="button" aria-label="Copy command"></button>
+        </div>
+      </div>
+      <div>
+        <h3>Every repository you own</h3>
+        <div class="code">
+          <pre><code><span class="c-cmt"># all branches of all repos, no full clones</span>
+python -I tools/scan_remote.py --owner &lt;you&gt;
+
+<span class="c-cmt"># plan, then rebuild over the GitHub API</span>
+python -I tools/excise_remote.py --owner &lt;you&gt; --local local.txt
+python -I tools/excise_remote.py --owner &lt;you&gt; --local local.txt --push</code></pre>
+          <button class="copy" type="button" aria-label="Copy command"></button>
+        </div>
+        <p class="small muted" style="margin-top:12px">
+          It first looks for your exact original in your local clones - same message,
+          same date, identical clean files - and rebuilds only when there is none.
+        </p>
+      </div>
+    </div>
+
+    <div class="note note--warn">
+      <p>
+        <strong>A twin of your commit means your credential pushed it.</strong> Repairing
+        the branches is half the job: rotate your GitHub tokens and SSH keys, revoke
+        sessions and OAuth apps, and rotate every secret that sat in a <code>.env</code>
+        on disk. A <code>403</code> from GitHub means your account is read-only on that
+        repository - an owner has to run the repair; the tool says so instead of
+        routing around it.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------------- -->
+<section id="agent" class="reveal">
+  <div class="wrap">
+    <p class="eyebrow">The AI agent</p>
+    <h2>Ask for it in plain words</h2>
+    <p class="lede" style="margin-bottom:30px">
+      <code>polinrider-hunter agent</code> is a chat in your terminal with an AI that has
+      this whole tool in its hands - plus a real shell, file editing and the web. Ask it
+      to find out how something got onto your machine, clean a set of repositories, cut
+      the poisoned commits out of every branch, fix a build or write a script. It does
+      the work, and shows you every change before it happens.
+    </p>
+
+    <div class="term" style="margin-bottom:28px">
+      <div class="term__bar"><i></i><i></i><i></i><span>polinrider-hunter agent · anthropic/claude-opus-5-5 · mode ask</span></div>
+      <div class="term__body"><span class="you">my repos show 2 incoming commits I never made. clean ~/work/app properly</span>
+
+<span class="tool">  -&gt; repos_audit {"paths":["~/work/app"]}
+  -&gt; repos_excise {"path":"~/work/app","dry_run":true}</span>
+<span class="ai">origin/main carries a twin of your commit "feat: live updates" with a payload in
+postcss.config.mjs, an api.js dropper and a config.bat. A cleanup commit sits on top.
+I can rebuild your original commit and drop both.</span>
+
+<span class="warn">APPROVAL</span> the agent wants to run <strong>repos_excise</strong>
+  origin/main: drop c71e… ('feat: live updates'), restore postcss.config.mjs, api.js, config.bat
+  [y]es / [n]o / [a]lways for this tool / [q]uit: <span class="you" style="font-weight:700">y</span>
+<span class="ok">  origin/main now at 3f9a… (was e05b…) - poisoned commit removed</span>
+
+<span class="ai">Done, and re-audited clean. Because your own commit was re-pushed, the GitHub
+credential that pushed it is compromised: rotate it first.</span></div>
+    </div>
+
+    <div class="grid grid--3" style="margin-bottom:26px">
+      <div class="panel">
+        <span class="step__num">DOES THE WORK</span>
+        <h3>A terminal, not a chatbot</h3>
+        <p class="small">
+          It runs commands in <code>cmd</code>, PowerShell or <code>sh</code>, reads,
+          writes and edits files, searches with glob and grep, keeps a visible plan for
+          longer jobs, and verifies after every change - the build, the tests, a re-scan.
+        </p>
+      </div>
+      <div class="panel">
+        <span class="step__num">ANY PROVIDER</span>
+        <h3>Bring your own key</h3>
+        <p class="small">
+          Claude, OpenAI, Gemini (free tier), OpenRouter, Groq, DeepSeek, Ollama on your
+          own machine, or any OpenAI-compatible endpoint. Switch mid-conversation with
+          <code>/provider</code> or <code>/model</code>; the conversation comes along.
+        </p>
+      </div>
+      <div class="panel">
+        <span class="step__num">YOU DECIDE</span>
+        <h3>Four permission modes</h3>
+        <p class="small">
+          <strong>read-only</strong> investigates and reports. <strong>ask</strong>, the
+          default, shows every change first. <strong>workspace-write</strong> edits files
+          in your project freely and asks for the rest. <strong>full-access</strong> asks
+          for nothing.
+        </p>
+      </div>
+    </div>
+
+    <div class="grid grid--2" style="margin-bottom:24px">
+      <div>
+        <h3>Set it up once</h3>
+        <div class="code">
+          <pre><code><span class="c-cmt"># guided: pick a provider, paste a key, it tests it</span>
+polinrider-hunter ai setup
+
+<span class="c-cmt"># or directly</span>
+polinrider-hunter ai key anthropic sk-ant-...
+polinrider-hunter ai test</code></pre>
+          <button class="copy" type="button" aria-label="Copy command"></button>
+        </div>
+      </div>
+      <div>
+        <h3>Then talk to it</h3>
+        <div class="code">
+          <pre><code><span class="c-cmt"># a chat; type what you want</span>
+polinrider-hunter agent
+
+<span class="c-cmt"># start on a task and stay in the chat</span>
+polinrider-hunter ai "fix every branch under ~/work"
+
+<span class="c-cmt"># one job, then exit - for scripts</span>
+polinrider-hunter agent --task "..." --mode read-only</code></pre>
+          <button class="copy" type="button" aria-label="Copy command"></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="table-scroll" style="margin-bottom:24px">
+      <table>
+        <thead><tr><th style="width:150px">Provider</th><th>Key from</th><th style="width:240px">Default model</th></tr></thead>
+        <tbody>
+          <tr><td><code>anthropic</code></td><td>console.anthropic.com</td><td><code>claude-opus-5-5</code></td></tr>
+          <tr><td><code>openai</code></td><td>platform.openai.com</td><td><code>gpt-4.1</code></td></tr>
+          <tr><td><code>gemini</code></td><td>aistudio.google.com/apikey - free tier, no card</td><td><code>gemini-3.8-flash</code></td></tr>
+          <tr><td><code>openrouter</code></td><td>openrouter.ai/keys - hundreds of models, one key</td><td><code>openrouter/auto</code></td></tr>
+          <tr><td><code>groq</code>, <code>deepseek</code></td><td>their consoles</td><td>their flagship chat models</td></tr>
+          <tr><td><code>ollama</code></td><td>nothing - runs on your machine</td><td><code>llama3.1</code></td></tr>
+          <tr><td><code>custom</code></td><td>any OpenAI-compatible server (<code>--base-url</code>): LM Studio, a proxy, your own</td><td>you name it</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="grid grid--2" style="margin-bottom:8px">
+      <div class="panel">
+        <h3>Its tools</h3>
+        <p class="small muted" style="margin-bottom:4px">Run freely:</p>
+        <ul class="chips">
+          <li>scan</li><li>repos_audit</li><li>repos_history</li><li>read_file</li><li>list_dir</li>
+          <li>glob_search</li><li>grep_search</li><li>processes</li><li>persistence</li>
+          <li>hash_file</li><li>threat_intel</li><li>web_search</li><li>web_fetch</li>
+          <li>todo_write</li><li>quarantine_list</li><li>write_report</li>
+        </ul>
+        <p class="small muted" style="margin:14px 0 4px">Change things - follow your mode:</p>
+        <ul class="chips chips--write">
+          <li>run_command</li><li>write_file</li><li>edit_file</li><li>clean</li>
+          <li>repos_fix</li><li>repos_excise</li><li>remove_persistence</li><li>kill_process</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>In the chat</h3>
+        <div class="table-scroll" style="border:0">
+          <table style="min-width:0;font-size:0.84rem">
+            <tbody>
+              <tr><td><code>/status</code></td><td>model, mode, steps, tokens</td></tr>
+              <tr><td><code>/provider</code> · <code>/model</code></td><td>switch, keep the conversation</td></tr>
+              <tr><td><code>/mode</code></td><td>read-only · ask · workspace-write · full-access</td></tr>
+              <tr><td><code>/plan</code> · <code>/tools</code></td><td>its checklist, its tools</td></tr>
+              <tr><td><code>/investigate</code></td><td>the full malware investigation</td></tr>
+              <tr><td><code>/report</code></td><td>write the incident report now</td></tr>
+              <tr><td><code>/key</code> · <code>/clear</code> · <code>/exit</code></td><td>save a key, start over, leave</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="note">
+      <p>
+        <strong>What it will not do, in any mode.</strong> Wipe a disk, mass-delete,
+        delete registry hives, or pipe a download into a shell (<code>curl … | sh</code>,
+        <code>iex</code>, <code style="white-space:nowrap">-enc</code>, <code>mshta</code>) - those are refused
+        outright. It treats web pages and the files of a suspect repository as evidence,
+        never as instructions, and will not run a repository's scripts before scanning it.
+        Every turn, tool call and result is written to a transcript you can audit.
+      </p>
+      <p class="small" style="margin-bottom:0">
+        On Claude it uses adaptive thinking at high effort, with the API's server-side
+        fallback switched on: malware analysis can trip a safety classifier, and a
+        declined turn is re-run on a suitable model instead of ending the investigation.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ---------------------------------------------------------------------- -->
 <section id="guard" class="reveal">
   <div class="wrap">
     <p class="eyebrow">The guard</p>
@@ -655,7 +1036,7 @@ polinrider-hunter status</code></pre>
           <span class="stat__label">Resident memory</span>
         </div>
         <div class="stat">
-          <span class="stat__val">362<span class="unit">KB</span></span>
+          <span class="stat__val">&lt;1<span class="unit">MB</span></span>
           <span class="stat__label">Binary on disk</span>
         </div>
         <div class="stat">
@@ -670,7 +1051,9 @@ polinrider-hunter status</code></pre>
         <strong>What it will not do.</strong> The guard heals working trees. It never
         rewrites git history and it never pushes - an automated process that force-pushes
         to shared branches is a worse problem than the one it is solving. It reports what
-        it finds on a branch and leaves the decision to you.
+        it finds on a branch and leaves the decision to you: history is only rewritten
+        when <em>you</em> run <code>repos --fix</code> or <code>repos --excise</code>, or
+        approve the agent doing it.
       </p>
     </div>
 
@@ -807,7 +1190,13 @@ polinrider-hunter uninstall --purge</code></pre>
           <tr><td><code>polinrider-hunter status</code></td><td>Where everything lives, and whether the guard is alive.</td></tr>
           <tr><td><code>polinrider-hunter scan [paths…]</code></td><td>Report only; change nothing. Exit 1 if anything critical.</td></tr>
           <tr><td><code>polinrider-hunter clean [paths…]</code></td><td>Scan, then remove payloads. <code>--dry-run</code> to preview.</td></tr>
-          <tr><td><code>polinrider-hunter repos [paths…]</code></td><td>Fetch and audit every branch, local and remote-tracking, without pulling or checking out.</td></tr>
+          <tr><td><code>polinrider-hunter repos [paths…]</code></td><td>Fetch and audit every branch, local and remote-tracking, without pulling or checking out - plus each repository's git config and hooks.</td></tr>
+          <tr><td><code>polinrider-hunter repos --fix</code></td><td>Push your clean local branch over a poisoned remote one, with a lease. <code>--dry-run</code> shows the push.</td></tr>
+          <tr><td><code>polinrider-hunter repos --excise</code></td><td>Cut the poisoned commit out of each remote branch and restore your original - no local copy needed. <code>--dry-run</code> shows the plan.</td></tr>
+          <tr><td><code>polinrider-hunter repos --history</code></td><td>Audit every blob in history, not just the tips, and print the purge command.</td></tr>
+          <tr><td><code>polinrider-hunter agent [paths…]</code></td><td>Chat with the AI agent. <code>--task "…"</code> for one job, <code>--investigate</code> for the full investigation, <code>--mode</code> for permissions, <code>--provider</code>/<code>--model</code> to choose.</td></tr>
+          <tr><td><code>polinrider-hunter ai</code></td><td>Which providers are set up and which is active. <code>ai setup</code> guides you; <code>ai key</code>, <code>ai use</code>, <code>ai mode</code>, <code>ai test</code>, <code>ai remove</code> manage it.</td></tr>
+          <tr><td><code>polinrider-hunter report</code></td><td>A written incident report: read-only AI investigation with a provider, a factual status report without one.</td></tr>
           <tr><td><code>polinrider-hunter log</code></td><td>What the guard has been doing. <code>--follow</code> watches live, <code>--all</code> shows everything.</td></tr>
           <tr><td><code>polinrider-hunter procs</code></td><td>List hidden stage-2 processes. <code>--kill</code> stops them.</td></tr>
           <tr><td><code>polinrider-hunter persistence</code></td><td>Check shell profiles, cron and login agents for a way back in. Reports only.</td></tr>
@@ -858,7 +1247,7 @@ polinrider-hunter uninstall --purge</code></pre>
     <ul class="checks" style="margin-bottom:26px">
       <li>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>
-        <span><strong>72 automated tests</strong> - 56 unit, 16 end-to-end. The end-to-end suite plants each real attack shape on disk and asserts the payload is gone, the surrounding code is byte-for-byte unchanged, a second pass finds nothing, and the quarantined original still matches.</span>
+        <span><strong>172 automated tests</strong> - 120 unit, 52 end-to-end. The end-to-end suite plants each real attack shape on disk and asserts the payload is gone, the surrounding code is byte-for-byte unchanged, a second pass finds nothing, and the quarantined original still matches. Poisoned remotes are built from real git repositories, and the agent is driven by a scripted model.</span>
       </li>
       <li>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>
@@ -871,6 +1260,10 @@ polinrider-hunter uninstall --purge</code></pre>
       <li>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>
         <span><strong>Six planted infections across five project trees</strong> - all four config shapes, the dropped <code>.env</code>, and the payload wearing a <code>.woff2</code> extension. All removed in 542&nbsp;ms; three deliberately-clean bystanders untouched.</span>
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>
+        <span><strong>Against a real account</strong> - on 11 October 2026 the excise repair rebuilt 152 branches across 114 repositories whose every branch had been re-pushed with a twin. A full re-scan of every branch afterwards: all clean, no twin left in any history.</span>
       </li>
       <li>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>
@@ -932,10 +1325,37 @@ polinrider-hunter uninstall --purge</code></pre>
 
       <dt>Does it phone home?</dt>
       <dd>
-        No. It makes no network requests of its own. The only outbound traffic is
-        <code>git fetch</code> on repositories you asked it to watch, on the hourly ref
-        audit, which you can disable by setting <code>git_interval = 0</code> in the
-        config.
+        No. The scanner and the guard make no network requests of their own. The only
+        outbound traffic is <code>git fetch</code> on repositories you asked it to watch,
+        on the hourly ref audit, which you can disable by setting
+        <code>git_interval = 0</code> in the config. The AI agent talks to the provider
+        <em>you</em> chose, and only while you are using it.
+      </dd>
+
+      <dt>Do I need an AI key?</dt>
+      <dd>
+        No. Everything except <code>agent</code> works without one - <code>hunt</code>,
+        <code>repos --excise</code>, the guard, the monitor. Gemini has a free tier, and
+        Ollama needs no key at all because the model runs on your machine.
+      </dd>
+
+      <dt>What does the AI provider see?</dt>
+      <dd>
+        Your messages and the results of the tools the agent runs - file contents it
+        reads, command output, scan findings. If that must not leave the machine, use
+        <code>ollama</code> or a <code>custom</code> endpoint you host. Keys are stored in
+        <code>config.txt</code> in the state directory, environment variables
+        (<code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, …) take precedence,
+        and the tool only ever prints them masked.
+      </dd>
+
+      <dt>Will it rewrite my history without asking?</dt>
+      <dd>
+        Never. The guard does not push. <code>repos --fix</code> and
+        <code>repos --excise</code> push only when you run them, show a dry run first,
+        use <code>--force-with-lease</code> so a push that raced someone else's fails
+        instead of erasing their work, refuse when real work sits on top of the
+        infection, and re-audit the branch afterwards.
       </dd>
 
       <dt>Is antivirus enough?</dt>
@@ -972,7 +1392,7 @@ polinrider-hunter uninstall --purge</code></pre>
         <code>polinrider-hunter monitor</code> gives a live dashboard - guard health,
         every watched path, a timeline of detections with the indicators that fired, and
         the quarantine. Add <code>--web</code> and it prints a
-        <code>http://154.0.0.1:2334(this is example IP address)</code> link to open in a browser. It is part of the
+        <code>http://127.0.0.1:8787</code> link to open in a browser. It is part of the
         binary, so it works on any machine that ran the install command: nothing to
         clone, no Python, no packages. It is read-only and the web view never leaves
         <code>localhost</code>.
@@ -986,7 +1406,7 @@ polinrider-hunter uninstall --purge</code></pre>
 <footer>
   <div class="wrap footer__inner">
     <div>
-      <strong style="color:var(--text)">polinrider-hunter</strong> · v1.0.0 · MIT
+      <strong style="color:var(--text)">polinrider-hunter</strong> · v1.2.0 · MIT
       <span class="muted"> - built because three scanners all reported <em>clean</em>.</span>
     </div>
     <div style="display:flex;gap:18px">

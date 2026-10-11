@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# POLINRIDER-HUNTER-DETECTOR: this tool names malware signatures to find them. Not malware.
 """Clean every infected remote branch of a repository with a NORMAL push (no history rewrite).
 
   python tools/branch_clean.py <repo> [<repo> ...] [--push] [--remote origin] [--only main,prod]

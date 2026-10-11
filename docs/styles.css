@@ -191,7 +191,10 @@ header.nav {
   background: var(--panel-bg); border: 1px solid var(--panel-border);
   border-radius: var(--radius); padding: 24px;
 }
-.grid { display: grid; gap: 16px; }
+.grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+/* Grid children default to min-width:auto, so one long code line would widen
+   the whole page on a phone; let them shrink and scroll inside instead. */
+.grid > *, .graph__row > *, .evasion__row > * { min-width: 0; }
 .grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .grid--4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -291,6 +294,58 @@ td code, p code, li code, .pane__note code {
 }
 .evasion__pad { color: var(--text-muted); opacity: 0.45; }
 @media (max-width: 620px) { .evasion__row { grid-template-columns: 1fr; gap: 6px; } }
+
+/* --- the commit graph (poisoned twin, before / after) ------------------- */
+.graph { display: grid; gap: 10px; }
+.graph__row {
+  display: grid; grid-template-columns: 122px 1fr; gap: 14px; align-items: center;
+}
+.graph__line {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 0; overflow-x: auto;
+  border: 1px solid var(--panel-border); border-radius: 9px; padding: 10px 13px;
+  background: var(--code-bg); font-family: var(--font-mono); font-size: 0.78rem;
+}
+.commit { display: inline-flex; align-items: center; gap: 7px; color: var(--text-dim); white-space: nowrap; }
+.commit::before {
+  content: ""; width: 10px; height: 10px; border-radius: 50%;
+  border: 2px solid var(--accent); background: var(--bg); flex: none;
+}
+.commit--bad { color: var(--danger); }
+.commit--bad::before { border-color: var(--danger); background: var(--danger-bg); }
+.commit--fix { color: var(--warn); }
+.commit--fix::before { border-color: var(--warn); }
+.commit--ok { color: var(--ok); }
+.commit--ok::before { border-color: var(--ok); background: var(--ok-bg); }
+.graph__edge { width: 26px; height: 2px; background: var(--panel-border-strong); margin: 0 8px; flex: none; }
+@media (max-width: 620px) { .graph__row { grid-template-columns: 1fr; gap: 6px; } }
+
+/* --- terminal transcript ------------------------------------------------ */
+.term {
+  background: var(--code-bg); border: 1px solid var(--panel-border-strong);
+  border-radius: var(--radius); overflow: hidden; font-family: var(--font-mono);
+  font-size: 0.82rem; line-height: 1.7;
+}
+.term__bar {
+  display: flex; align-items: center; gap: 7px; padding: 10px 14px;
+  border-bottom: 1px solid var(--panel-border); color: var(--text-muted); font-size: 0.72rem;
+}
+.term__bar i { width: 9px; height: 9px; border-radius: 50%; background: var(--panel-border-strong); display: inline-block; }
+.term__bar span { margin-left: 8px; letter-spacing: 0.04em; }
+.term__body { padding: 16px 18px; overflow-x: auto; white-space: pre-wrap; color: var(--text-dim); }
+.term__body .you { color: var(--text); font-weight: 500; }
+.term__body .you::before { content: "you> "; color: var(--accent-strong); }
+.term__body .tool { color: var(--text-muted); }
+.term__body .ok { color: var(--ok); }
+.term__body .warn { color: var(--warn); }
+.term__body .ai { color: var(--text-dim); font-family: var(--font-body); font-size: 0.9rem; }
+
+/* --- chips -------------------------------------------------------------- */
+.chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 12px 0 0; padding: 0; list-style: none; }
+.chips li {
+  font-family: var(--font-mono); font-size: 0.74rem; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--panel-border-strong); color: var(--text-dim); background: var(--panel-bg);
+}
+.chips--write li { border-color: var(--warn-border); color: var(--warn); background: var(--warn-bg); }
 
 /* --- callouts ----------------------------------------------------------- */
 .note {
