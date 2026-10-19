@@ -1,4 +1,6 @@
 //! Auditing a repository from nothing but its URL.
+//! Detector opt-out marker: POLINRIDER-HUNTER-DETECTOR (the tests below build a
+//! poisoned fixture, which would otherwise trip the hunter's own branch audit).
 //!
 //! `repos https://github.com/org/repo` has no clone to work from, and making
 //! one the ordinary way would put the infected tree on disk - exactly the thing
