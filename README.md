@@ -735,8 +735,8 @@ cargo build --release      # target/release/polinrider-hunter
 cargo test                 # unit tests + tests/end_to_end.rs + tests/campaigns.rs + tests/agent.rs
 ```
 
-<!-- TEST-COUNT: 213 at 1.3.0 (151 unit, 62 integration) - keep docs/index.html in step -->
-The suite is 213 tests at 1.3.0. `tests/agent.rs` drives the agent with a
+<!-- TEST-COUNT: 218 at 1.3.0 (152 unit, 66 integration) - keep docs/index.html in step -->
+The suite is 218 tests at 1.3.0. `tests/agent.rs` drives the agent with a
 scripted model: it proves `repos_repair` plans dry by default and pushes only
 with approval, that `credential_exposure` reports paths and never values, and
 that the command classifier and secret-path checks hold.

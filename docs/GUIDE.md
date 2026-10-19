@@ -14,7 +14,7 @@ cargo build --release
 # binary: target\release\polinrider-hunter.exe   (put it on PATH, or use the full path below)
 ```
 
-`cargo test` runs the suite (213 tests at 1.3.0): unit tests plus three
+`cargo test` runs the suite (218 tests at 1.3.0): unit tests plus four
 end-to-end binaries (`tests/`) that plant every attack shape on disk -
 including a real poisoned remote - and prove it gets removed, and drive the
 agent with a scripted model.
