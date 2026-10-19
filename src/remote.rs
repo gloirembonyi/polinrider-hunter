@@ -211,4 +211,35 @@ mod tests {
         let err = mirror(bad.to_str().unwrap()).err().expect("no such repository");
         assert!(err.contains("could not fetch"), "{err}");
     }
+
+    /// Deleting a whole file (a dropper, a committed artefact) needs
+    /// `update-index --force-remove`, which git refuses in a bare repository
+    /// unless it is given a work tree. The first real URL repair failed on every
+    /// branch that carried `api.js` or `spellright.dict` for exactly this reason.
+    #[test]
+    fn a_url_repair_can_delete_whole_payload_files_from_a_bare_mirror() {
+        let (root, bare) = poisoned_origin("delete");
+        let work = root.join("work");
+        let pad: String = std::iter::repeat('\t').take(300).collect();
+        let body: String = (1..=200).map(|i| format!("var _fake={i};")).collect();
+        std::fs::write(work.join("api.js"), format!("{pad}{body}")).unwrap();
+        std::fs::create_dir_all(work.join(".vscode")).unwrap();
+        std::fs::write(work.join(".vscode").join("spellright.dict"), "x\n").unwrap();
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-q", "-m", "chore: y"]);
+        git(&work, &["push", "-q", "origin", "main"]);
+
+        let m = mirror(bare.to_str().unwrap()).expect("mirror");
+        let hits = gitscan::scan_bare(&m.dir);
+        let mut plans = gitscan::plan_repairs(&m.dir, &hits);
+        assert_eq!(plans.len(), 1, "{hits:?}");
+        let new = gitscan::build_repair(&mut plans[0]).expect("repair builds in a bare mirror");
+        let tree = git(&m.dir, &["ls-tree", "-r", "--name-only", &new]);
+        assert!(!tree.contains("api.js"), "{tree}");
+        assert!(!tree.contains("spellright.dict"), "{tree}");
+        assert!(tree.contains("postcss.config.mjs"), "the honest config is kept: {tree}");
+        assert!(gitscan::scan_bare(&m.dir).iter().all(|h| h.git_ref != new), "nothing flagged on the repair");
+        drop(m);
+        remove_tree(&root);
+    }
 }

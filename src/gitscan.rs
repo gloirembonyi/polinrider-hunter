@@ -1134,7 +1134,13 @@ pub fn build_repair(plan: &mut RepairPlan) -> Result<String, String> {
     let tip = plan.remote_sha.clone();
     let index = std::env::temp_dir().join(format!("prh-repair-{}-{}.idx", std::process::id(), &tip[..10.min(tip.len())]));
     let idx = index.to_string_lossy().to_string();
-    let env = [("GIT_INDEX_FILE", idx.as_str())];
+    // A bare mirror (`repos <url>`) has no work tree, and `update-index` refuses to
+    // run without one even on a private index. An empty directory satisfies it;
+    // nothing is ever written there, so the infected tree still never reaches disk.
+    let empty = std::env::temp_dir().join(format!("prh-repair-wt-{}-{}", std::process::id(), &tip[..10.min(tip.len())]));
+    let _ = std::fs::create_dir_all(&empty);
+    let wt = empty.to_string_lossy().to_string();
+    let env = [("GIT_INDEX_FILE", idx.as_str()), ("GIT_WORK_TREE", wt.as_str())];
     let result = (|| {
         let r = git_env(&repo, &["read-tree", &tip], &env, None);
         if !r.ok {
@@ -1286,6 +1292,7 @@ pub fn build_repair(plan: &mut RepairPlan) -> Result<String, String> {
         Ok(new)
     })();
     let _ = std::fs::remove_file(&index);
+    let _ = std::fs::remove_dir(&empty);
     let new = result?;
     plan.rebuilt = Some(new.clone());
     Ok(new)
