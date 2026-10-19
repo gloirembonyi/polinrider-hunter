@@ -192,6 +192,27 @@ pub fn spawn_detached(program: &str, args: &[&str]) -> bool {
     cmd.spawn().is_ok()
 }
 
+/// Neutralise repository configuration that runs programs.
+///
+/// Every repo this tool opens is one that might be compromised, and git runs
+/// code a repository's own config names: `core.fsmonitor` on anything that
+/// refreshes the index (`status`, `diff`), hooks on `push`, a pager on long
+/// output. An attacker who can write `.git/config` turns "audit this repo" into
+/// "run my program". These overrides come first on the command line, so they
+/// beat whatever the repository says.
+pub fn harden_git(cmd: &mut Command) {
+    #[cfg(windows)]
+    const NO_HOOKS: &str = "core.hooksPath=NUL";
+    #[cfg(not(windows))]
+    const NO_HOOKS: &str = "core.hooksPath=/dev/null";
+    cmd.args([
+        "-c", "core.fsmonitor=false",
+        "-c", NO_HOOKS,
+        "-c", "core.pager=cat",
+        "-c", "protocol.ext.allow=never",
+    ]);
+}
+
 /// Run `git` inside `repo`.
 pub fn git(repo: &std::path::Path, args: &[&str]) -> Output {
     let mut full: Vec<&str> = vec!["-C"];
@@ -210,6 +231,7 @@ pub fn git(repo: &std::path::Path, args: &[&str]) -> Output {
 /// that into a failed fetch, which is a thing we can report and carry on from.
 fn run_git(args: &[&str]) -> Output {
     let mut cmd = Command::new("git");
+    harden_git(&mut cmd);
     cmd.args(args);
     // No terminal prompt, no GUI credential helper, no ssh passphrase prompt.
     cmd.env("GIT_TERMINAL_PROMPT", "0");

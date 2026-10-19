@@ -193,6 +193,7 @@ pub fn heal(finding: &Finding, dry_run: bool) -> Outcome {
         h.ioc == "font-disguise"
             || h.ioc == "propagation-artifact"
             || h.ioc == "loader-artifact"
+            || h.ioc == scanner::DROPPER_IOC
             || signatures::WHOLE_FILE_PAYLOAD.contains(&h.ioc)
     }) || (finding.hits.iter().any(|h| h.ioc == "hex-string-array")
         && finding.hits.iter().any(|h| h.ioc == "node-loader-refresh"));

@@ -9,8 +9,8 @@
 use std::path::PathBuf;
 
 use polinrider_hunter::{
-    agent, config, daemon, gemini, gitconfig, gitscan, healer, monitor, notify, persist, procscan,
-    llm, report, scanner, service, util, winpersist,
+    agent, config, daemon, gemini, gitconfig, gitscan, healer, mcp, monitor, notify, persist, procscan,
+    llm, remote, report, scanner, service, util, winpersist,
 };
 
 use config::Config;
@@ -34,6 +34,11 @@ struct Args {
     provider: Option<String>,
     mode: Option<String>,
     base_url: Option<String>,
+    /// Repository URLs for `repos`: positional arguments that look like one
+    /// (https://, git@, ssh://), or `--url <u>`.
+    urls: Vec<String>,
+    /// `--skip-remotes a,b` for `repos --repair`.
+    skip_remotes: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -51,7 +56,13 @@ fn parse_args() -> Args {
     let mut provider = None;
     let mut mode = None;
     let mut base_url = None;
+    let mut urls = Vec::new();
+    let mut skip_remotes = None;
     while let Some(a) = it.next() {
+        if a == "--url" { if let Some(u) = it.next() { urls.push(u); } continue; }
+        if let Some(v) = a.strip_prefix("--url=") { urls.push(v.to_string()); continue; }
+        if a == "--skip-remotes" { skip_remotes = it.next(); continue; }
+        if let Some(v) = a.strip_prefix("--skip-remotes=") { skip_remotes = Some(v.to_string()); continue; }
         if a == "--provider" { provider = it.next(); continue; }
         if let Some(v) = a.strip_prefix("--provider=") { provider = Some(v.to_string()); continue; }
         if a == "--mode" { mode = it.next(); continue; }
@@ -78,6 +89,8 @@ fn parse_args() -> Args {
             port = v.parse().ok();
         } else if a.starts_with("--") {
             flags.push(a);
+        } else if remote::is_url(&a) {
+            urls.push(a);
         } else {
             positional.push(a);
         }
@@ -96,6 +109,8 @@ fn parse_args() -> Args {
         provider,
         mode,
         base_url,
+        urls,
+        skip_remotes,
     }
 }
 
@@ -135,8 +150,9 @@ fn main() {
         "set-key" => cmd_set_key(&args, cfg),
         "protect" => cmd_protect(&args, &cfg),
         "unprotect" => cmd_unprotect(&args, &cfg),
-        "procs" => cmd_procs(&args),
-        "persistence" => cmd_persistence(),
+        "procs" => cmd_procs(&args, json),
+        "persistence" => cmd_persistence(&args, json),
+        "mcp" => mcp::run(VERSION),
         "log" | "logs" => cmd_log(&args),
         "monitor" | "dashboard" => cmd_monitor(&args, &cfg),
         "daemon" => daemon::run(&cfg, args.has("--once")),
@@ -144,8 +160,8 @@ fn main() {
         "stop" => cmd_stop(),
         "uninstall" => cmd_uninstall(&args),
         "test-notify" => cmd_test_notify(),
-        "status" => cmd_status(&cfg),
-        "quarantine" => cmd_quarantine(),
+        "status" => cmd_status(&cfg, json),
+        "quarantine" => cmd_quarantine(json),
         "hook" => cmd_hook(),
         "version" | "--version" | "-V" => {
             println!("polinrider-hunter {VERSION}");
@@ -211,21 +227,33 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
     // 1. Anything running right now. Do this first: a live loader can re-drop a
     //    payload into a directory we have already passed.
     let mut killed = 0usize;
+    // Everything the sweep touches, for --json: an agent driving this tool
+    // needs the list, not just the counts.
+    let mut j_procs: Vec<String> = Vec::new();
+    let mut j_persist: Vec<String> = Vec::new();
+    let mut j_cleaned: Vec<String> = Vec::new();
+    let mut j_review: Vec<String> = Vec::new();
     for s in procscan::find() {
-        if dry {
-            println!("  {} pid {} ({})", util::c(YELLOW, "would stop"), s.pid, s.marker);
+        let action = if dry {
+            "would stop"
+        } else if procscan::kill(s.pid) {
+            killed += 1;
+            "stopped"
+        } else {
+            "could not stop"
+        };
+        if json {
+            j_procs.push(format!(
+                "{{\"pid\":{},\"marker\":\"{}\",\"action\":\"{action}\"}}",
+                s.pid,
+                util::json_escape(&s.marker)
+            ));
             continue;
         }
-        if procscan::kill(s.pid) {
-            killed += 1;
-            println!(
-                "  {} pid {} ({})",
-                util::c(GREEN, "stopped loader"),
-                s.pid,
-                s.marker
-            );
-        } else {
-            println!("  {} pid {}", util::c(RED, "could not stop"), s.pid);
+        match action {
+            "would stop" => println!("  {} pid {} ({})", util::c(YELLOW, "would stop"), s.pid, s.marker),
+            "stopped" => println!("  {} pid {} ({})", util::c(GREEN, "stopped loader"), s.pid, s.marker),
+            _ => println!("  {} pid {}", util::c(RED, "could not stop"), s.pid),
         }
     }
 
@@ -252,6 +280,15 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
         if a.removed {
             persist_removed += 1;
         }
+        if json {
+            j_persist.push(format!(
+                "{{\"kind\":\"{}\",\"name\":\"{}\",\"target\":\"{}\",\"removed\":{},\"dry\":{dry}}}",
+                util::json_escape(&a.kind),
+                util::json_escape(&a.name),
+                util::json_escape(&a.target),
+                a.removed
+            ));
+        }
         if !json {
             let verb = if dry { "would remove" } else if a.removed { "removed  " } else { "FAILED   " };
             println!("  {} {} {}", util::c(GREEN, verb), a.kind, a.name);
@@ -271,6 +308,14 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
         found += 1;
         if !f.is_critical() {
             noted += 1;
+            if json {
+                let iocs: Vec<String> = f.hits.iter().map(|h| format!("\"{}\"", util::json_escape(h.ioc))).collect();
+                j_review.push(format!(
+                    "{{\"path\":\"{}\",\"indicators\":[{}]}}",
+                    util::json_escape(&f.path.to_string_lossy()),
+                    iocs.join(",")
+                ));
+            }
             if !json {
                 // Say what fired. A bare path under a word like "review" is a
                 // demand with no information in it: the first question anybody
@@ -295,6 +340,15 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
             }
             healer::Outcome::Failed(r) => manual.push(format!("{} - {r}", f.path.display())),
             healer::Outcome::Skipped(_) => {}
+        }
+        if json {
+            let iocs: Vec<String> = f.hits.iter().map(|h| format!("\"{}\"", util::json_escape(h.ioc))).collect();
+            j_cleaned.push(format!(
+                "{{\"path\":\"{}\",\"outcome\":\"{}\",\"indicators\":[{}]}}",
+                util::json_escape(&f.path.to_string_lossy()),
+                util::json_escape(outcome.label().trim()),
+                iocs.join(",")
+            ));
         }
         if !json {
             let iocs: Vec<&str> = f.hits.iter().map(|h| h.ioc).collect();
@@ -348,11 +402,22 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
     //     files, so they are removed here.
     for dir in scanner::cached_malicious_packages() {
         if dry {
-            if !json { println!("  {} {}", util::c(YELLOW, "would remove"), dir.display()); }
+            if json {
+                j_cleaned.push(format!("{{\"path\":\"{}\",\"outcome\":\"would remove package directory\",\"indicators\":[\"malicious-npm-package\"]}}", util::json_escape(&dir.to_string_lossy())));
+            } else {
+                println!("  {} {}", util::c(YELLOW, "would remove"), dir.display());
+            }
             continue;
         }
         let ok = std::fs::remove_dir_all(&dir).is_ok();
         if ok { healed += 1; } else { manual.push(format!("{} - could not remove the package directory", dir.display())); }
+        if json {
+            j_cleaned.push(format!(
+                "{{\"path\":\"{}\",\"outcome\":\"{}\",\"indicators\":[\"malicious-npm-package\"]}}",
+                util::json_escape(&dir.to_string_lossy()),
+                if ok { "removed package directory" } else { "could not remove package directory" }
+            ));
+        }
         if !json {
             let colour = if ok { GREEN } else { RED };
             let verb = if ok { "removed  " } else { "FAILED   " };
@@ -390,9 +455,23 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
     }
 
     if json {
+        let strs = |v: &[String]| v.iter().map(|s| format!("\"{}\"", util::json_escape(s))).collect::<Vec<_>>().join(",");
+        let startup: Vec<String> = persist_hits
+            .iter()
+            .map(|h| format!("{{\"location\":\"{}\",\"line\":{},\"why\":\"{}\"}}", util::json_escape(&h.location), h.line_no, util::json_escape(h.why)))
+            .collect();
         println!(
-            "{{\"healed\":{healed},\"found\":{found},\"needs_review\":{noted},\"persistence_removed\":{persist_removed},\"manual\":{}}}",
-            manual.len()
+            "{{\"dry\":{dry},\"healed\":{healed},\"found\":{found},\"needs_review\":{noted},\"persistence_removed\":{persist_removed},\"manual\":{},\
+             \"processes\":[{}],\"persistence\":[{}],\"startup_review\":[{}],\"cleaned\":[{}],\"review\":[{}],\"clickfix\":[{}],\"manual_items\":[{}],\"quarantine\":\"{}\"}}",
+            manual.len(),
+            j_procs.join(","),
+            j_persist.join(","),
+            startup.join(","),
+            j_cleaned.join(","),
+            j_review.join(","),
+            strs(&clickfix),
+            strs(&manual),
+            util::json_escape(&config::quarantine_dir().to_string_lossy())
         );
         return if manual.is_empty() { 0 } else { 1 };
     }
@@ -482,8 +561,12 @@ fn agent_paths(args: &Args, cfg: &Config) -> Vec<PathBuf> {
 }
 
 fn cmd_set_key(args: &Args, mut cfg: Config) -> i32 {
-    let Some(k) = args.positional.first().cloned().or_else(|| args.key.clone()) else {
-        eprintln!("usage: polinrider-hunter set-key <GEMINI_API_KEY> [--model <id>] [--vt-key <VT_API_KEY>]\n\nGet a free key at https://aistudio.google.com/apikey (no card needed).");
+    let given = args.positional.first().cloned().or_else(|| args.key.clone());
+    if given.is_some() || args.vt_key.is_some() {
+        warn_key_on_command_line();
+    }
+    let Some(k) = given.or_else(|| prompt_key("Gemini")) else {
+        eprintln!("usage: polinrider-hunter set-key [--model <id>]   (paste the key when asked)\n\nGet a free key at https://aistudio.google.com/apikey (no card needed).");
         return 2;
     };
     cfg.gemini_key = k.trim().to_string();
@@ -499,14 +582,40 @@ fn cmd_set_key(args: &Args, mut cfg: Config) -> i32 {
     }
 }
 
+/// A key typed as an argument is in the shell's history file and in the
+/// process list while the command runs; say so, once.
+fn warn_key_on_command_line() {
+    eprintln!("{}", util::c(YELLOW, "warning: a key given on the command line is saved in your shell history - prefer `polinrider-hunter ai key <provider>` (asks for it) or an environment variable, and clear the history entry."));
+}
+
+/// Ask for a key on the terminal (hidden on Unix).
+fn prompt_key(label: &str) -> Option<String> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        // Piped in: `cat key.txt | polinrider-hunter ai key anthropic`.
+        let mut s = String::new();
+        let _ = std::io::stdin().read_line(&mut s);
+        return Some(s.trim().to_string()).filter(|k| !k.is_empty());
+    }
+    if cfg!(windows) {
+        println!("{}", util::c(DIM, "(the key is visible while you paste it, but it is not stored in your shell history)"));
+    }
+    config::read_secret(&format!("paste your {label} key: "))
+}
+
 fn build_model(args: &Args, cfg: &Config) -> Result<Box<dyn gemini::Model>, String> {
     let mut cfg = cfg.clone();
-    if let Some(b) = &args.base_url {
-        cfg.ai_base_url = b.clone();
+    if args.key.is_some() {
+        warn_key_on_command_line();
     }
     let Some(provider) = llm::resolve_provider(args.provider.as_deref(), &cfg) else {
         return Err(no_key_help());
     };
+    if let Some(b) = &args.base_url {
+        // --base-url belongs to the provider this run uses, nothing else.
+        cfg.ai_base_url = b.clone();
+        cfg.ai_provider = provider.clone();
+    }
     let model = args.model.clone().or_else(|| std::env::var("POLINRIDER_MODEL").ok());
     llm::build(&provider, model.as_deref(), args.key.as_deref(), &cfg)
 }
@@ -514,7 +623,7 @@ fn build_model(args: &Args, cfg: &Config) -> Result<Box<dyn gemini::Model>, Stri
 fn no_key_help() -> String {
     let mut s = String::from("no AI provider is set up yet. Pick one and add its key:\n");
     for p in llm::PROVIDERS.iter().filter(|p| p.id != "custom") {
-        s.push_str(&format!("  polinrider-hunter ai key {:<10} <KEY>   {} ({})\n", p.id, p.label, p.key_url));
+        s.push_str(&format!("  polinrider-hunter ai key {:<10}   {} ({})\n", p.id, p.label, p.key_url));
     }
     s.push_str("or run the guided setup:  polinrider-hunter ai setup");
     s
@@ -549,15 +658,27 @@ fn cmd_ai(args: &Args, mut cfg: Config) -> i32 {
             0
         }
         "key" | "set-key" | "add" => {
-            let (id, key) = (arg(1), arg(2));
-            if id.is_empty() || key.is_empty() {
-                eprintln!("usage: polinrider-hunter ai key <provider> <KEY>\nproviders: {}", llm::PROVIDERS.iter().map(|p| p.id).collect::<Vec<_>>().join(", "));
+            let id = arg(1);
+            if id.is_empty() {
+                eprintln!("usage: polinrider-hunter ai key <provider>   (you are asked for the key)\nproviders: {}, vt", llm::PROVIDERS.iter().map(|p| p.id).collect::<Vec<_>>().join(", "));
                 return 2;
             }
             if llm::provider(&id).is_none() && id != "vt" {
                 eprintln!("unknown provider `{id}`");
                 return 2;
             }
+            let key = if arg(2).is_empty() {
+                match prompt_key(&id) {
+                    Some(k) => k,
+                    None => {
+                        eprintln!("no key entered");
+                        return 2;
+                    }
+                }
+            } else {
+                warn_key_on_command_line();
+                arg(2)
+            };
             cfg.set_ai_key(&id, &key);
             if cfg.ai_provider.is_empty() && id != "vt" {
                 cfg.ai_provider = id.to_ascii_lowercase();
@@ -583,10 +704,14 @@ fn cmd_ai(args: &Args, mut cfg: Config) -> i32 {
                 eprintln!("usage: polinrider-hunter ai use <provider> [model] [--base-url <url>]\nproviders: {}", llm::PROVIDERS.iter().map(|p| p.id).collect::<Vec<_>>().join(", "));
                 return 2;
             }
+            let switching = !cfg.ai_provider.eq_ignore_ascii_case(&id);
             cfg.ai_provider = id.to_ascii_lowercase();
             cfg.ai_model = arg(2).or_else_model(args);
             if let Some(b) = &args.base_url {
                 cfg.ai_base_url = b.clone();
+            } else if switching && !matches!(cfg.ai_provider.as_str(), "custom" | "ollama") {
+                // An endpoint set for the previous provider must not receive this one's key.
+                cfg.ai_base_url.clear();
             }
             save_cfg(&cfg, &format!("now using {}{}", cfg.ai_provider, if cfg.ai_model.is_empty() { String::new() } else { format!(" / {}", cfg.ai_model) }))
         }
@@ -645,6 +770,8 @@ fn cmd_ai(args: &Args, mut cfg: Config) -> i32 {
                 provider: args.provider.clone(),
                 mode: args.mode.clone(),
                 base_url: args.base_url.clone(),
+                urls: Vec::new(),
+                skip_remotes: None,
             };
             if !a.has("--once") {
                 // `ai "do X"` stays in the chat after the task, like the REPL.
@@ -701,7 +828,7 @@ fn ai_setup(mut cfg: Config) -> i32 {
     };
     if p.needs_key {
         println!("  get a key at {}", util::c(BOLD, p.key_url));
-        let Some(key) = read(&format!("paste your {} key: ", p.label)) else { return 2 };
+        let Some(key) = prompt_key(p.label) else { return 2 };
         if key.is_empty() {
             eprintln!("no key entered");
             return 2;
@@ -720,7 +847,7 @@ fn ai_setup(mut cfg: Config) -> i32 {
         return 1;
     }
     println!("{}", util::c(DIM, "testing the connection..."));
-    let args = Args { cmd: "ai".into(), positional: vec!["test".into()], flags: vec![], interval: None, port: None, key: None, model: None, task: None, max_steps: None, vt_key: None, provider: None, mode: None, base_url: None };
+    let args = Args { cmd: "ai".into(), positional: vec!["test".into()], flags: vec![], interval: None, port: None, key: None, model: None, task: None, max_steps: None, vt_key: None, provider: None, mode: None, base_url: None, urls: Vec::new(), skip_remotes: None };
     let code = cmd_ai(&args, Config::load());
     if code == 0 {
         println!("{}", util::c(GREEN, "ready - start with: polinrider-hunter agent"));
@@ -793,7 +920,7 @@ fn cmd_report(args: &Args, cfg: Config) -> i32 {
         let mut a = agent::Agent::new(model, opts, &vt);
         a.set_mode(agent::Mode::ReadOnly);
         println!("{}", util::c(BOLD, "writing an incident report (read-only investigation; nothing will be changed)"));
-        let task = "Produce a complete incident report for this machine and the project directories using READ-ONLY tools only (scan, repos_audit, persistence, processes, quarantine_list, list_dir, read_file, run_command with read-only commands, web_search). Do not call clean, remove_persistence, repos_fix or kill_process. Then call write_report with the full report and finish with a 5-line summary.";
+        let task = "Produce a complete incident report for this machine and the project directories using READ-ONLY tools only (scan, repos_audit, repos_history, repos_repair with dry_run=true, persistence, processes, credential_exposure, quarantine_list, list_dir, read_file, run_command with read-only commands, web_search). Do not call clean, remove_persistence, repos_fix, repos_excise, kill_process or repos_repair with dry_run=false. Then call write_report with the full report and finish with a 5-line summary.";
         return match a.run(task) {
             Ok(_) => { for r in &a.reports { println!("{} {}", util::c(GREEN, "report:"), r.display()); } if a.reports.is_empty() { println!("{}", util::c(YELLOW, "the model did not write a report file; see the transcript")); } 0 }
             Err(e) => { eprintln!("{} {e}", util::c(RED, "report:")); 1 }
@@ -884,17 +1011,28 @@ fn cmd_clean(args: &Args, cfg: &Config, json: bool) -> i32 {
     let findings = scanner::scan_paths(&paths, false);
     let cfg_hits = audit_repo_configs(&paths);
     if findings.is_empty() && cfg_hits.is_empty() {
-        println!("{}", util::c(GREEN, "Nothing to clean."));
+        if json {
+            println!("{{\"findings\":[]}}");
+            println!("{{\"type\":\"summary\",\"dry\":{dry},\"found\":0,\"healed\":0,\"failed\":0}}");
+        } else {
+            println!("{}", util::c(GREEN, "Nothing to clean."));
+        }
         return 0;
     }
     report::print_findings(&findings, json);
     if !cfg_hits.is_empty() {
-        println!();
+        if !json {
+            println!();
+        }
         report::print_config_hits(&cfg_hits, json);
-        println!();
+        if !json {
+            println!();
+        }
         fix_repo_configs(&cfg_hits, dry, json);
     }
-    println!();
+    if !json {
+        println!();
+    }
 
     let mut healed = 0usize;
     let mut failed = 0usize;
@@ -916,12 +1054,28 @@ fn cmd_clean(args: &Args, cfg: &Config, json: bool) -> i32 {
         if matches!(outcome, healer::Outcome::Failed(_)) {
             failed += 1;
         }
+        if json {
+            println!(
+                "{{\"type\":\"heal\",\"path\":\"{}\",\"outcome\":\"{}\",\"ok\":{ok},\"dry\":{dry}}}",
+                util::json_escape(&f.path.to_string_lossy()),
+                util::json_escape(outcome.label().trim())
+            );
+            continue;
+        }
         let colour = if ok { GREEN } else { YELLOW };
         println!(
             "  {} {}",
             util::c(colour, &outcome.label()),
             f.path.display()
         );
+    }
+    if json {
+        println!(
+            "{{\"type\":\"summary\",\"dry\":{dry},\"found\":{},\"healed\":{healed},\"failed\":{failed},\"quarantine\":\"{}\"}}",
+            findings.len(),
+            util::json_escape(&config::quarantine_dir().to_string_lossy())
+        );
+        return if failed > 0 { 1 } else { 0 };
     }
     println!();
     report::summary_line(findings.len(), healed);
@@ -941,23 +1095,186 @@ fn cmd_clean(args: &Args, cfg: &Config, json: bool) -> i32 {
     }
 }
 
+/// One repository under audit: a local path, or a temporary bare mirror of a
+/// URL (see `remote::mirror`). Mirrors are deleted when they are dropped.
+struct RepoTarget {
+    path: PathBuf,
+    /// What to print for it: the path, or the URL it mirrors.
+    label: String,
+    bare: bool,
+}
+
+/// An infected remote branch, with everything needed to say who can fix it.
+struct InfectedBranch {
+    repo: PathBuf,
+    remote: String,
+    branch: String,
+    git_ref: String,
+    files: Vec<String>,
+    iocs: Vec<String>,
+    access: gitscan::Access,
+    who: Vec<gitscan::Pusher>,
+}
+
+/// Resolve the paths and URLs `repos` was given.
+fn repo_targets(args: &Args, cfg: &Config, json: bool) -> (Vec<RepoTarget>, Vec<remote::Mirror>, usize) {
+    let mut targets = Vec::new();
+    let mut mirrors = Vec::new();
+    let mut failed = 0usize;
+    let paths: Vec<PathBuf> = if args.positional.is_empty() && args.urls.is_empty() {
+        cfg.paths.clone()
+    } else {
+        args.positional.iter().map(PathBuf::from).collect()
+    };
+    for p in paths {
+        let bare = gitscan::is_bare(&p);
+        if !bare && !gitscan::is_repo(&p) {
+            continue;
+        }
+        targets.push(RepoTarget { label: p.display().to_string(), path: p, bare });
+    }
+    for u in &args.urls {
+        if !json {
+            println!("{} {}", util::c(DIM, "fetching"), u);
+        }
+        match remote::mirror(u) {
+            Ok(m) => {
+                targets.push(RepoTarget { path: m.dir.clone(), label: u.clone(), bare: true });
+                mirrors.push(m);
+            }
+            Err(e) => {
+                failed += 1;
+                if json {
+                    println!("{{\"type\":\"error\",\"url\":\"{}\",\"error\":\"{}\"}}", util::json_escape(u), util::json_escape(&e));
+                } else {
+                    println!("  {} {}: {}", util::c(RED, "cannot fetch"), u, e);
+                }
+            }
+        }
+    }
+    (targets, mirrors, failed)
+}
+
+/// `write_access`, remembered per (repository, remote) for the run.
+fn access_for(cache: &mut Vec<(PathBuf, String, gitscan::Access)>, repo: &std::path::Path, remote: &str, online: bool) -> gitscan::Access {
+    if let Some((_, _, a)) = cache.iter().find(|(p, r, _)| p == repo && r == remote) {
+        return a.clone();
+    }
+    let a = if online {
+        gitscan::write_access(repo, remote)
+    } else {
+        let url = gitscan::remote_url(repo, remote);
+        let (_, owner, name) = gitscan::parse_remote_url(&url).unwrap_or_default();
+        let project = if owner.is_empty() { String::new() } else { format!("{owner}/{name}") };
+        gitscan::Access { can_write: None, how: "not checked (--no-fetch)".into(), owner, project, url }
+    };
+    cache.push((repo.to_path_buf(), remote.to_string(), a.clone()));
+    a
+}
+
+fn access_json(label: &str, remote: &str, branch: &str, a: &gitscan::Access, files: &[String], iocs: &[String], who: &[gitscan::Pusher]) -> String {
+    let strs = |v: &[String]| v.iter().map(|s| format!("\"{}\"", util::json_escape(s))).collect::<Vec<_>>().join(",");
+    let who: Vec<String> = who
+        .iter()
+        .map(|p| {
+            format!(
+                "{{\"name\":\"{}\",\"email\":\"{}\",\"sha\":\"{}\",\"date\":\"{}\"}}",
+                util::json_escape(&p.name),
+                util::json_escape(&p.email),
+                p.sha,
+                util::json_escape(&p.date)
+            )
+        })
+        .collect();
+    format!(
+        "{{\"type\":\"access\",\"repo\":\"{}\",\"remote\":\"{}\",\"branch\":\"{}\",\"url\":\"{}\",\"owner\":\"{}\",\"project\":\"{}\",\"can_write\":{},\"how\":\"{}\",\"files\":[{}],\"indicators\":[{}],\"who_pushed\":[{}]}}",
+        util::json_escape(label),
+        util::json_escape(remote),
+        util::json_escape(branch),
+        util::json_escape(&a.url),
+        util::json_escape(&a.owner),
+        util::json_escape(&a.project),
+        match a.can_write { Some(b) => b.to_string(), None => "null".into() },
+        util::json_escape(&a.how),
+        strs(files),
+        strs(iocs),
+        who.join(",")
+    )
+}
+
+fn who_line(who: &[gitscan::Pusher]) -> String {
+    if who.is_empty() {
+        return "(no commit found for the infected files)".into();
+    }
+    who.iter()
+        .map(|p| format!("{} <{}> ({}, {})", p.name, p.email, &p.sha[..10.min(p.sha.len())], p.date))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+const ASK_LINE: &str = "ask them to run: polinrider-hunter repos --repair <their clone>";
+
+/// `repos --access`: only the question "can I push to this, and who owns it?".
+fn cmd_repos_access(targets: &[RepoTarget], do_fetch: bool, json: bool) -> i32 {
+    let mut cache = Vec::new();
+    let mut unknown = 0usize;
+    for t in targets {
+        if do_fetch && !t.bare {
+            gitscan::fetch(&t.path);
+        }
+        for r in gitscan::remotes(&t.path) {
+            let a = access_for(&mut cache, &t.path, &r, true);
+            if a.can_write.is_none() {
+                unknown += 1;
+            }
+            if json {
+                println!("{}", access_json(&t.label, &r, "", &a, &[], &[], &[]));
+                continue;
+            }
+            let verdict = match a.can_write {
+                Some(true) => util::c(GREEN, "CAN PUSH   "),
+                Some(false) => util::c(RED, "READ-ONLY  "),
+                None => util::c(YELLOW, "UNKNOWN    "),
+            };
+            println!("{verdict} {} {} {}", util::c(DIM, &t.label), util::c(BOLD, &r), a.url);
+            if !a.project.is_empty() {
+                println!("    owner: {}  project: {}", a.owner, a.project);
+            }
+            println!("    {}", util::c(DIM, &a.how));
+        }
+    }
+    if unknown > 0 { 1 } else { 0 }
+}
+
 fn cmd_repos(args: &Args, cfg: &Config, json: bool) -> i32 {
-    let paths = target_paths(args, cfg);
-    if !require_paths(&paths) {
+    if args.positional.is_empty() && args.urls.is_empty() && !require_paths(&cfg.paths) {
         return 2;
     }
     let do_fetch = !args.has("--no-fetch");
-    let mut all = Vec::new();
-    for p in &paths {
-        if !gitscan::is_repo(p) {
-            continue;
-        }
-        if !json {
-            println!("{} {}", util::c(DIM, "auditing"), p.display());
-        }
-        all.extend(gitscan::scan_repo(p, do_fetch));
+    let (targets, _mirrors, url_failed) = repo_targets(args, cfg, json);
+    let label = |p: &std::path::Path| -> String {
+        targets.iter().find(|t| t.path == p).map(|t| t.label.clone()).unwrap_or_else(|| p.display().to_string())
+    };
+    let relabel = |hits: &[gitscan::RefHit]| -> Vec<gitscan::RefHit> {
+        hits.iter().map(|h| gitscan::RefHit { repo: PathBuf::from(label(&h.repo)), ..h.clone() }).collect()
+    };
+    let audit = |t: &RepoTarget, fetch: bool| -> Vec<gitscan::RefHit> {
+        if t.bare { gitscan::scan_bare(&t.path) } else { gitscan::scan_repo(&t.path, fetch) }
+    };
+    let with_url_failures = |code: i32| if url_failed > 0 && code == 0 { 2 } else { code };
+
+    if args.has("--access") {
+        return with_url_failures(cmd_repos_access(&targets, do_fetch, json));
     }
-    report::print_ref_hits(&all, json);
+
+    let mut all = Vec::new();
+    for t in &targets {
+        if !json {
+            println!("{} {}", util::c(DIM, "auditing"), t.label);
+        }
+        all.extend(audit(t, do_fetch));
+    }
+    report::print_ref_hits(&relabel(&all), json);
 
     // Ref tips answer "what would run if I checked this out". They do not
     // answer "what is still in this repository": cleaning a branch leaves every
@@ -965,28 +1282,32 @@ fn cmd_repos(args: &Args, cfg: &Config, json: bool) -> i32 {
     // id for anyone who has the repo. --history walks every blob instead.
     let mut hist: Vec<gitscan::HistoryHit> = Vec::new();
     if args.has("--history") {
-        for p in &paths {
-            if gitscan::is_repo(p) {
-                if !json {
-                    println!("{} {}", util::c(DIM, "walking history of"), p.display());
-                }
-                hist.extend(gitscan::scan_history(p, do_fetch));
+        for t in &targets {
+            if !json {
+                println!("{} {}", util::c(DIM, "walking history of"), t.label);
             }
+            hist.extend(gitscan::scan_history_any(&t.path, do_fetch));
         }
-        if !json {
+        if json {
+            // The text report runs git against each repo path; only the JSON
+            // can carry the URL in its place.
+            let shown: Vec<gitscan::HistoryHit> = hist
+                .iter()
+                .map(|h| gitscan::HistoryHit { repo: PathBuf::from(label(&h.repo)), size: h.size, blob: h.blob.clone(), path: h.path.clone(), iocs: h.iocs.clone() })
+                .collect();
+            report::print_history_hits(&shown, true);
+        } else {
             println!();
+            report::print_history_hits(&hist, false);
         }
-        report::print_history_hits(&hist, json);
     }
 
     // Repository configuration is part of the audit too: an injected
     // core.fsmonitor or a hook that curls into sh is how a clean-looking clone
     // still runs attacker code.
     let mut cfg_hits = Vec::new();
-    for p in &paths {
-        if gitscan::is_repo(p) {
-            cfg_hits.extend(gitconfig::audit(p));
-        }
+    for t in &targets {
+        cfg_hits.extend(gitconfig::audit(&t.path));
     }
     if !cfg_hits.is_empty() {
         if !json {
@@ -995,13 +1316,77 @@ fn cmd_repos(args: &Args, cfg: &Config, json: bool) -> i32 {
         report::print_config_hits(&cfg_hits, json);
     }
 
+    // Who can push to each infected remote branch, and who put the infection
+    // there. An audit that ends "infected" without saying who can act on it
+    // leaves the reader stuck; this is the part that tells them.
+    let mut infected: Vec<InfectedBranch> = Vec::new();
+    for h in &all {
+        let Some(short) = h.git_ref.strip_prefix("refs/remotes/") else { continue };
+        let Some((remote, branch)) = short.split_once('/') else { continue };
+        if let Some(b) = infected.iter_mut().find(|b| b.repo == h.repo && b.remote == remote && b.branch == branch) {
+            if !b.files.contains(&h.file) {
+                b.files.push(h.file.clone());
+            }
+            for i in &h.iocs {
+                if !b.iocs.contains(i) {
+                    b.iocs.push(i.clone());
+                }
+            }
+            continue;
+        }
+        infected.push(InfectedBranch {
+            repo: h.repo.clone(),
+            remote: remote.to_string(),
+            branch: branch.to_string(),
+            git_ref: h.git_ref.clone(),
+            files: vec![h.file.clone()],
+            iocs: h.iocs.clone(),
+            access: gitscan::Access { can_write: None, how: String::new(), owner: String::new(), project: String::new(), url: String::new() },
+            who: Vec::new(),
+        });
+    }
+    let mut cache: Vec<(PathBuf, String, gitscan::Access)> = Vec::new();
+    for b in infected.iter_mut() {
+        b.access = access_for(&mut cache, &b.repo, &b.remote, do_fetch);
+        b.who = gitscan::who_pushed(&b.repo, &b.git_ref, &b.files);
+        if json {
+            println!("{}", access_json(&label(&b.repo), &b.remote, &b.branch, &b.access, &b.files, &b.iocs, &b.who));
+        }
+    }
+    if !json {
+        let cannot: Vec<&InfectedBranch> = infected.iter().filter(|b| b.access.can_write == Some(false)).collect();
+        if !cannot.is_empty() {
+            println!();
+            println!("{}", util::c(BOLD, "infected branches you cannot push to"));
+            for b in cannot {
+                let owner = if b.access.project.is_empty() { b.access.url.clone() } else { format!("{} ({})", b.access.project, b.access.url) };
+                println!("  {} {} {}/{}", util::c(YELLOW, "READ-ONLY"), util::c(DIM, &label(&b.repo)), b.remote, b.branch);
+                println!("           owner: {owner}");
+                println!("           {}", util::c(DIM, &b.access.how));
+                println!("           pushed the infection: {}", who_line(&b.who));
+                println!("           {}", util::c(BOLD, ASK_LINE));
+            }
+        }
+        let unknown: Vec<&InfectedBranch> = infected.iter().filter(|b| b.access.can_write.is_none()).collect();
+        if !unknown.is_empty() && do_fetch {
+            println!();
+            println!("{}", util::c(BOLD, "infected branches whose push access could not be determined"));
+            for b in unknown {
+                println!("  {} {} {}/{}", util::c(YELLOW, "UNKNOWN  "), util::c(DIM, &label(&b.repo)), b.remote, b.branch);
+                println!("           {}", util::c(DIM, &b.access.how));
+                println!("           pushed the infection: {}", who_line(&b.who));
+            }
+        }
+    }
+
     let history_found = !hist.is_empty();
     let fix = args.has("--fix");
     let dry = args.has("--dry-run");
     let mut plans: Vec<gitscan::RemotePlan> = Vec::new();
-    for p in &paths {
-        if gitscan::is_repo(p) {
-            plans.extend(gitscan::plan_remote_fixes(p, &all));
+    for t in &targets {
+        // A mirror has no local branch to restore from; --fix is for clones.
+        if !t.bare {
+            plans.extend(gitscan::plan_remote_fixes(&t.path, &all));
         }
     }
     let mut unresolved = all.len();
@@ -1041,10 +1426,8 @@ fn cmd_repos(args: &Args, cfg: &Config, json: bool) -> i32 {
     let mut excise_failed = 0usize;
     if args.has("--excise") {
         let mut plans: Vec<gitscan::ExcisePlan> = Vec::new();
-        for p in &paths {
-            if gitscan::is_repo(p) {
-                plans.extend(gitscan::plan_excisions(p));
-            }
+        for t in &targets {
+            plans.extend(gitscan::plan_excisions(&t.path));
         }
         if !json {
             println!();
@@ -1059,20 +1442,21 @@ fn cmd_repos(args: &Args, cfg: &Config, json: bool) -> i32 {
         }
         for mut plan in plans {
             let name = format!("{}/{}", plan.remote, plan.branch);
+            let shown = label(&plan.repo);
             match gitscan::apply_excise(&mut plan, dry) {
                 Ok(msg) => {
                     excised_ok += 1;
                     if json {
                         println!(
                             "{{\"type\":\"excise\",\"repo\":\"{}\",\"branch\":\"{}\",\"ok\":true,\"poisoned\":\"{}\",\"new\":\"{}\",\"dry\":{}}}",
-                            util::json_escape(&plan.repo.display().to_string()),
+                            util::json_escape(&shown),
                             util::json_escape(&name),
                             plan.poisoned,
                             plan.rebuilt.clone().unwrap_or_default(),
                             dry
                         );
                     } else {
-                        println!("  {} {} {}", util::c(GREEN, if dry { "dry-run " } else { "excised " }), util::c(DIM, &plan.repo.display().to_string()), msg);
+                        println!("  {} {} {}", util::c(GREEN, if dry { "dry-run " } else { "excised " }), util::c(DIM, &shown), msg);
                         println!("           {} {} restored: {}", util::c(DIM, "poisoned:"), &plan.poisoned[..10.min(plan.poisoned.len())], plan.restored.join(", "));
                     }
                 }
@@ -1081,16 +1465,100 @@ fn cmd_repos(args: &Args, cfg: &Config, json: bool) -> i32 {
                     if json {
                         println!(
                             "{{\"type\":\"excise\",\"repo\":\"{}\",\"branch\":\"{}\",\"ok\":false,\"error\":\"{}\"}}",
-                            util::json_escape(&plan.repo.display().to_string()),
+                            util::json_escape(&shown),
                             util::json_escape(&name),
                             util::json_escape(&e)
                         );
                     } else {
-                        println!("  {} {} {}: {}", util::c(YELLOW, "BLOCKED "), util::c(DIM, &plan.repo.display().to_string()), name, e);
+                        println!("  {} {} {}: {}", util::c(YELLOW, "BLOCKED "), util::c(DIM, &shown), name, e);
                     }
                 }
             }
         }
+    }
+    // --repair: clean each infected remote branch with one forward commit,
+    // built in the object database (nothing checked out) and pushed as a plain
+    // fast-forward. Works when teammates' work sits on top of the infection.
+    if args.has("--repair") {
+        let mut plans: Vec<gitscan::RepairPlan> = Vec::new();
+        for t in &targets {
+            plans.extend(gitscan::plan_repairs(&t.path, &all));
+        }
+        // Remotes that are somebody else's repository: report, do not push.
+        let mut skip: Vec<String> = std::env::var("POLINRIDER_SKIP_REMOTES")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if let Some(s) = &args.skip_remotes {
+            skip.extend(s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()));
+        }
+        plans.retain(|p| !skip.contains(&p.remote));
+        if !json {
+            println!();
+            println!("{}", util::c(BOLD, if dry { "remote branches --repair would clean (dry run, nothing pushed)" } else { "repairing remote branches (forward commit, no force push)" }));
+            if plans.is_empty() {
+                println!("  {}", util::c(GREEN, "No infected remote branch tips."));
+            }
+        }
+        let mut failed = 0usize;
+        for mut plan in plans {
+            let name = format!("{}/{}", plan.remote, plan.branch);
+            let shown = label(&plan.repo);
+            // No push access: say who has it instead of letting the push fail.
+            if let Some(b) = infected.iter().find(|b| b.repo == plan.repo && b.remote == plan.remote && b.branch == plan.branch && b.access.can_write == Some(false)) {
+                let owner = if b.access.project.is_empty() { b.access.url.clone() } else { format!("{} ({})", b.access.project, b.access.url) };
+                let msg = format!("no push access to {owner} - {}; pushed the infection: {}; {ASK_LINE}", b.access.how, who_line(&b.who));
+                failed += 1;
+                if json {
+                    println!(
+                        "{{\"type\":\"repair\",\"repo\":\"{}\",\"branch\":\"{}\",\"ok\":false,\"dry\":{dry},\"blocked\":\"no push access\",\"message\":\"{}\",\"actions\":[]}}",
+                        util::json_escape(&shown),
+                        util::json_escape(&name),
+                        util::json_escape(&msg)
+                    );
+                } else {
+                    println!("  {} {} {}: {}", util::c(YELLOW, "BLOCKED "), util::c(DIM, &shown), name, msg);
+                }
+                continue;
+            }
+            let res = gitscan::apply_repair(&mut plan, dry);
+            if json {
+                let acts: Vec<String> = plan.actions.iter().map(|a| format!("\"{}\"", util::json_escape(a))).collect();
+                let (ok, msg) = match &res {
+                    Ok(m) => (true, m.clone()),
+                    Err(e) => (false, e.clone()),
+                };
+                println!(
+                    "{{\"type\":\"repair\",\"repo\":\"{}\",\"branch\":\"{}\",\"ok\":{ok},\"dry\":{dry},\"message\":\"{}\",\"actions\":[{}]}}",
+                    util::json_escape(&shown),
+                    util::json_escape(&name),
+                    util::json_escape(&msg),
+                    acts.join(",")
+                );
+            } else {
+                match &res {
+                    Ok(m) => println!("  {} {} {}", util::c(GREEN, if dry { "ready   " } else { "repaired" }), util::c(DIM, &shown), m),
+                    Err(e) => println!("  {} {} {}: {}", util::c(YELLOW, "BLOCKED "), util::c(DIM, &shown), name, e),
+                }
+                for a in &plan.actions {
+                    println!("           - {a}");
+                }
+            }
+            if res.is_err() {
+                failed += 1;
+            }
+        }
+        if !dry {
+            let remaining = targets
+                .iter()
+                .flat_map(|t| audit(t, false))
+                .filter(|h| h.git_ref.starts_with("refs/remotes/"))
+                .count();
+            return with_url_failures(if failed == 0 && remaining == 0 { 0 } else { 1 });
+        }
+        return with_url_failures(if failed == 0 { 0 } else { 1 });
     }
     if args.has("--excise") && !dry {
         if excise_failed > 0 {
@@ -1099,13 +1567,12 @@ fn cmd_repos(args: &Args, cfg: &Config, json: bool) -> i32 {
         if excised_ok > 0 {
             // apply_excise re-audited each pushed tip. Local branches may still
             // point at the old poisoned commits, so judge the remote refs only.
-            let remaining: Vec<_> = paths
+            let remaining: Vec<_> = targets
                 .iter()
-                .filter(|p| gitscan::is_repo(p))
-                .flat_map(|p| gitscan::scan_repo(p, false))
+                .flat_map(|t| audit(t, false))
                 .filter(|h| h.git_ref.starts_with("refs/remotes/"))
                 .collect();
-            return if remaining.is_empty() { 0 } else { 1 };
+            return with_url_failures(if remaining.is_empty() { 0 } else { 1 });
         }
     }
     if !json && !all.is_empty() {
@@ -1117,9 +1584,9 @@ fn cmd_repos(args: &Args, cfg: &Config, json: bool) -> i32 {
                 "{}",
                 util::c(
                     YELLOW,
-                    "These are branch contents, not your working tree. `repos --fix` pushes your clean\n\
-                     local branch over a poisoned remote branch (with --force-with-lease, and only when\n\
-                     every extra remote commit IS the infection). Add --dry-run to preview."
+                    "These are branch contents, not your working tree. `repos --repair` adds one clean\n\
+                     commit on top of each poisoned remote branch (no force push); `repos --fix` pushes\n\
+                     your clean local branch over it instead. Add --dry-run to preview either."
                 )
             );
         }
@@ -1129,13 +1596,13 @@ fn cmd_repos(args: &Args, cfg: &Config, json: bool) -> i32 {
         // tip is clean, so this cannot exit 0 just because --fix succeeded.
         return 1;
     }
-    if all.is_empty() && cfg_hits.iter().all(|h| h.sev != polinrider_hunter::signatures::Severity::Critical) {
+    with_url_failures(if all.is_empty() && cfg_hits.iter().all(|h| h.sev != polinrider_hunter::signatures::Severity::Critical) {
         0
     } else if fix && !dry && unresolved == 0 {
         0
     } else {
         1
-    }
+    })
 }
 
 fn cmd_protect(args: &Args, cfg: &Config) -> i32 {
@@ -1278,27 +1745,70 @@ fn colourise(line: &str) -> String {
 }
 
 /// Look where the loader would arrange to come back from.
-fn cmd_persistence() -> i32 {
-    println!("{}", util::c(BOLD, "checking persistence locations"));
-    println!(
-        "{}",
-        util::c(
-            DIM,
-            "  shell startup files, scheduled jobs, login agents - the places the\n  \
-             published cleanup guidance says to check by hand"
-        )
-    );
+fn cmd_persistence(args: &Args, json: bool) -> i32 {
+    let remove = args.has("--remove");
+    if !json {
+        println!("{}", util::c(BOLD, "checking persistence locations"));
+        println!(
+            "{}",
+            util::c(
+                DIM,
+                "  shell startup files, scheduled jobs, login agents - the places the\n  \
+                 published cleanup guidance says to check by hand"
+            )
+        );
+    }
     let hits = persist::check();
-    println!();
     // What `hunt` would remove outright: Run keys, tasks and Startup shims that
-    // provably launch the campaign.
-    let removable = winpersist::sweep(true);
+    // provably launch the campaign. --remove does it here.
+    let removable = winpersist::sweep(!remove);
+    let clickfix = winpersist::clickfix_history();
+    if json {
+        let review: Vec<String> = hits
+            .iter()
+            .map(|h| {
+                format!(
+                    "{{\"location\":\"{}\",\"line\":{},\"why\":\"{}\",\"text\":\"{}\"}}",
+                    util::json_escape(&h.location),
+                    h.line_no,
+                    util::json_escape(h.why),
+                    util::json_escape(&h.line)
+                )
+            })
+            .collect();
+        let auto: Vec<String> = removable
+            .iter()
+            .map(|a| {
+                format!(
+                    "{{\"kind\":\"{}\",\"name\":\"{}\",\"target\":\"{}\",\"removed\":{}}}",
+                    util::json_escape(&a.kind),
+                    util::json_escape(&a.name),
+                    util::json_escape(&a.target),
+                    a.removed
+                )
+            })
+            .collect();
+        let cf: Vec<String> = clickfix.iter().map(|c| format!("\"{}\"", util::json_escape(c))).collect();
+        println!(
+            "{{\"remove\":{remove},\"review\":[{}],\"removable\":[{}],\"clickfix\":[{}]}}",
+            review.join(","),
+            auto.join(","),
+            cf.join(",")
+        );
+        return if hits.is_empty() && removable.iter().all(|a| a.removed) && clickfix.is_empty() { 0 } else { 1 };
+    }
+    println!();
     for a in &removable {
+        if remove {
+            let verb = if a.removed { "removed  " } else { "FAILED   " };
+            println!("{} {} {}", util::c(if a.removed { GREEN } else { RED }, verb), a.kind, util::c(BOLD, &a.name));
+            println!("    {}", util::c(DIM, &a.target));
+            continue;
+        }
         println!("{} {} {}", util::c(RED, "REMOVABLE"), a.kind, util::c(BOLD, &a.name));
         println!("    {}", util::c(DIM, &a.target));
-        println!("    {}", util::c(DIM, "`polinrider-hunter hunt` removes this (original quarantined)"));
+        println!("    {}", util::c(DIM, "`polinrider-hunter persistence --remove` or `hunt` removes this (original quarantined)"));
     }
-    let clickfix = winpersist::clickfix_history();
     for c in &clickfix {
         println!("{} {}", util::c(YELLOW, "CLICKFIX "), util::c(BOLD, "Run dialog history"));
         println!("    {}", c);
@@ -1336,8 +1846,26 @@ fn cmd_persistence() -> i32 {
     1
 }
 
-fn cmd_procs(args: &Args) -> i32 {
+fn cmd_procs(args: &Args, json: bool) -> i32 {
     let suspects = procscan::find();
+    if json {
+        let kill = args.has("--kill");
+        let items: Vec<String> = suspects
+            .iter()
+            .map(|s| {
+                let killed = if kill { Some(procscan::kill(s.pid)) } else { None };
+                format!(
+                    "{{\"pid\":{},\"marker\":\"{}\",\"cmdline\":\"{}\",\"killed\":{}}}",
+                    s.pid,
+                    util::json_escape(&s.marker),
+                    util::json_escape(&s.cmdline),
+                    match killed { Some(b) => b.to_string(), None => "null".into() }
+                )
+            })
+            .collect();
+        println!("{{\"kill\":{kill},\"processes\":[{}]}}", items.join(","));
+        return if suspects.is_empty() { 0 } else { 1 };
+    }
     if suspects.is_empty() {
         println!("{}", util::c(GREEN, "No hidden loader processes running."));
         return 0;
@@ -1740,7 +2268,32 @@ fn report_uninstall(removed: &[String], kept: &[String]) {
         }
     }
 }
-fn cmd_status(cfg: &Config) -> i32 {
+fn cmd_status(cfg: &Config, json: bool) -> i32 {
+    if json {
+        let heartbeat = service::daemon_alive(cfg.interval);
+        let paths: Vec<String> = cfg.paths.iter().map(|p| format!("\"{}\"", util::json_escape(&p.to_string_lossy()))).collect();
+        let j = |p: &std::path::Path| util::json_escape(&p.to_string_lossy());
+        println!(
+            "{{\"version\":\"{VERSION}\",\"home\":\"{}\",\"config\":\"{}\",\"log\":\"{}\",\"quarantine\":\"{}\",\
+             \"autostart\":{{\"installed\":{},\"path\":\"{}\"}},\"guard\":{{\"running\":{},\"heartbeat_age_secs\":{}}},\
+             \"interval\":{},\"full_interval\":{},\"git_interval\":{},\"auto_heal\":{},\"kill_procs\":{},\"paths\":[{}]}}",
+            j(&config::home()),
+            j(&config::config_path()),
+            j(&config::log_path()),
+            j(&config::quarantine_dir()),
+            service::is_installed(),
+            j(&service::autostart_path()),
+            heartbeat.is_some(),
+            heartbeat.map(|a| a.to_string()).unwrap_or_else(|| "null".into()),
+            cfg.interval,
+            cfg.full_interval,
+            cfg.git_interval,
+            cfg.auto_heal,
+            cfg.kill_procs,
+            paths.join(",")
+        );
+        return 0;
+    }
     println!("{}", util::c(BOLD, &format!("polinrider-hunter {VERSION}")));
     println!("  home         {}", config::home().display());
     println!("  config       {}", config::config_path().display());
@@ -1786,8 +2339,19 @@ fn cmd_status(cfg: &Config) -> i32 {
     0
 }
 
-fn cmd_quarantine() -> i32 {
+fn cmd_quarantine(json: bool) -> i32 {
     let idx = config::quarantine_index();
+    if json {
+        // The index is already one JSON object per line.
+        let text = std::fs::read_to_string(&idx).unwrap_or_default();
+        let entries: Vec<&str> = text.lines().map(str::trim).filter(|l| l.starts_with('{')).collect();
+        println!(
+            "{{\"dir\":\"{}\",\"quarantine\":[{}]}}",
+            util::json_escape(&config::quarantine_dir().to_string_lossy()),
+            entries.join(",")
+        );
+        return 0;
+    }
     match std::fs::read_to_string(&idx) {
         Ok(t) if !t.trim().is_empty() => {
             println!("{}", util::c(BOLD, "quarantined originals"));
@@ -1912,24 +2476,50 @@ Detects and removes the PolinRider supply-chain malware.
 {b}ON DEMAND{r}
   scan [paths...]        Report indicators; change nothing. Exit 1 if infected.
   clean [paths...]       Scan, then remove payloads. Originals are quarantined.
-  repos [paths...]       Fetch and audit every branch of each repo, local and
+  repos [paths|urls...]  Fetch and audit every branch of each repo, local and
                          remote-tracking, without pulling or checking out; also
-                         audits each repo's git config and hooks. --fix pushes
+                         audits each repo's git config and hooks. A URL
+                         (https://, git@, ssh://) is fetched into a temporary
+                         bare mirror - nothing is ever checked out - audited,
+                         and the mirror deleted. For every infected remote
+                         branch it says whether you can push, who owns the
+                         repository and who pushed the infection. --repair adds
+                         one clean commit on top of each poisoned remote branch
+                         (no force push; works from a URL too); --fix pushes
                          your clean local branch over a poisoned remote branch;
                          --excise removes the poisoned commit itself from each
                          remote branch (no local copy needed; cleanup commits
                          are folded away; original message/author/date kept);
-                         --history also audits old commits, not just the tips.
+                         --history also audits old commits, not just the tips;
+                         --access only reports push access per remote.
+  mcp                    Serve the Model Context Protocol on stdin/stdout, so
+                         Claude Code, Cursor, Codex, Windsurf or any MCP client
+                         can drive this tool (no API key needed here). Tools:
+                         scan, clean, hunt, repos_audit, repos_repair,
+                         repos_history, processes, persistence, quarantine_list,
+                         status, access_check. Anything that changes something
+                         is a dry run until the call carries confirm:true.
   procs                  List hidden stage-2 processes. --kill stops them.
   persistence            Check shell profiles, cron and login agents for a
-                         way back in. Reports only; never edits them.
+                         way back in. Reports only; --remove deletes the Run
+                         keys, tasks and Startup shims that provably launch
+                         the campaign (hand-maintained files are never edited).
   protect [repos...]     Install just the pre-commit hook.
   unprotect [repos...]   Remove it.
   quarantine             List originals kept aside during healing.
 
 {b}FLAGS{r}
-  --json                 Machine-readable output (scan, clean, repos).
-  --dry-run              clean: report what would change, write nothing.
+  --json                 Machine-readable output (scan, clean, hunt, repos,
+                         procs, persistence, quarantine, status).
+  --dry-run              clean/hunt/repos: report what would change, write nothing.
+  --url <url>            repos: audit a repository by URL (bare mirror, nothing
+                         checked out). Bare URLs are recognised without it.
+  --repair               repos: one clean forward commit per infected remote
+                         branch, pushed fast-forward; branches you cannot push
+                         to are reported BLOCKED with who can fix them.
+  --skip-remotes <a,b>   repos --repair: remotes never to push to.
+  --access               repos: report push access per remote, nothing else.
+  --remove               persistence: remove provably malicious autostart entries.
   --quick                scan: only the filenames PolinRider targets.
   --no-fetch             repos: audit refs as they are, do not contact remotes.
   --history              repos: also walk every blob reachable from any ref, not

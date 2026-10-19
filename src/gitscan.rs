@@ -111,6 +111,7 @@ fn blob_at(repo: &Path, git_ref: &str, file: &str) -> Option<Vec<u8>> {
         .to_string();
     // Not via util::run because blob contents are bytes, not UTF-8 text.
     let mut cmd = std::process::Command::new("git");
+    crate::util::harden_git(&mut cmd);
     cmd.args(["-C", repo.to_str()?, "cat-file", "blob", &sha]);
     #[cfg(windows)]
     {
@@ -196,6 +197,31 @@ pub fn critical_on(repo: &Path, git_ref: &str) -> Vec<(String, Vec<String>)> {
             }
         }
     }
+    // A package.json whose scripts run a dropper on this same ref (`node api.js
+    // && next dev`). The dropper itself is caught above when grep sees it;
+    // reading the hook's target directly also catches one it does not.
+    for file in &names {
+        if file.contains("node_modules/") || !file.rsplit('/').next().map(|n| n == "package.json").unwrap_or(false) {
+            continue;
+        }
+        let Some(data) = blob_at(repo, git_ref, file) else { continue };
+        let dir = file.rsplit_once('/').map(|(d, _)| format!("{d}/")).unwrap_or_default();
+        let sibling = |rel: &str| -> Option<Vec<u8>> {
+            let full = format!("{dir}{rel}");
+            names.contains(&full).then(|| blob_at(repo, git_ref, &full)).flatten()
+        };
+        for target in scanner::node_targets(&data) {
+            let full = format!("{dir}{target}");
+            if let Some(bytes) = sibling(&target) {
+                if scanner::is_padded_dropper(Path::new(&full), &bytes) {
+                    push(&mut out, &full, vec![scanner::DROPPER_IOC.to_string()]);
+                }
+            }
+        }
+        if scanner::runs_dropper(&data, &sibling).is_some() {
+            push(&mut out, file, vec!["script-runs-dropper".to_string()]);
+        }
+    }
     // A font-named file that is really a script, and that an armed task runs.
     for file in &names {
         if !is_font_name(file) || file.contains("node_modules/") {
@@ -226,7 +252,7 @@ fn is_vscode_task_file(file: &str) -> bool {
 
 fn is_font_name(file: &str) -> bool {
     let ext = file.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    matches!(ext.as_str(), "woff" | "woff2" | "ttf" | "otf" | "eot" | "llf" | "lkf")
+    matches!(ext.as_str(), "woff" | "woff2" | "ttf" | "otf" | "eot" | "llf" | "lkf" | "lfk")
 }
 
 /// Commands an honest open-the-folder task has no reason to run.
@@ -415,6 +441,7 @@ fn batch_cat_file<'a>(repo: &Path, shas: impl Iterator<Item = &'a str>) -> Vec<(
 
     let Some(dir) = repo.to_str() else { return Vec::new() };
     let mut cmd = Command::new("git");
+    crate::util::harden_git(&mut cmd);
     cmd.args(["-C", dir, "cat-file", "--batch"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -803,6 +830,7 @@ fn git_env(repo: &Path, args: &[&str], env: &[(&str, &str)], stdin: Option<&[u8]
     use std::io::Write;
     use std::process::{Command, Stdio};
     let mut cmd = Command::new("git");
+    crate::util::harden_git(&mut cmd);
     cmd.arg("-C").arg(repo).args(args);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     for (k, v) in env {
@@ -950,6 +978,350 @@ pub fn apply_excise(plan: &mut ExcisePlan, dry: bool) -> Result<String, String> 
 }
 
 // ---------------------------------------------------------------------------
+// Repairing a remote branch with a normal, forward commit
+// ---------------------------------------------------------------------------
+//
+// `--fix` and `--excise` replace history and need a force push, so both refuse
+// (rightly) once teammates have pushed real work on top of the infection - on a
+// shared repository that is nearly always. `--repair` leaves history alone: it
+// builds one new commit on top of the infected tip that removes the infection,
+// and pushes it as an ordinary fast-forward. If anyone pushed in the meantime
+// the push is rejected, never overwritten.
+//
+// Everything happens in git's object database through a private index. The
+// infected tree is never checked out, so nothing that could execute the
+// payload - an editor extension loading a config, a live stage 2 re-infecting
+// whatever folder it sees, `npm run dev` - ever gets a copy on disk. That last
+// one is not hypothetical: on 2026-10-11 a worktree-based cleanup was
+// re-infected while it ran and committed a fresh `api.js` under the message
+// "remove injected PolinRider malware".
+
+pub const REPAIR_MESSAGE: &str = "security: remove injected PolinRider malware (polinrider-hunter --repair)\n\n\
+Removes payloads appended to config files, droppers (api.js, script-as-font),\n\
+folder-open autorun tasks, package.json hooks that run them and .gitignore\n\
+entries that hid the campaign's push scripts. Built without checking the\n\
+infected tree out. Rotate every secret this branch's builds could read.\n";
+
+/// A plan to clean one remote branch with a forward commit.
+#[derive(Debug, Clone)]
+pub struct RepairPlan {
+    pub repo: PathBuf,
+    pub remote: String,
+    pub branch: String,
+    pub remote_sha: String,
+    pub infected_files: Vec<String>,
+    /// What the repair did, one line per file.
+    pub actions: Vec<String>,
+    /// The clean commit, once built.
+    pub rebuilt: Option<String>,
+}
+
+/// One plan per infected remote-tracking branch in `hits`.
+pub fn plan_repairs(repo: &Path, hits: &[RefHit]) -> Vec<RepairPlan> {
+    let mut plans: Vec<RepairPlan> = Vec::new();
+    for h in hits.iter().filter(|h| h.repo == repo) {
+        let Some(short) = h.git_ref.strip_prefix("refs/remotes/").or_else(|| h.git_ref.strip_prefix("remotes/")) else { continue };
+        let Some((remote, branch)) = short.split_once('/') else { continue };
+        if let Some(p) = plans.iter_mut().find(|p| p.remote == remote && p.branch == branch) {
+            if !p.infected_files.contains(&h.file) {
+                p.infected_files.push(h.file.clone());
+            }
+            continue;
+        }
+        let Some(sha) = rev_parse(repo, &format!("refs/remotes/{short}")) else { continue };
+        plans.push(RepairPlan {
+            repo: repo.to_path_buf(),
+            remote: remote.to_string(),
+            branch: branch.to_string(),
+            remote_sha: sha,
+            infected_files: vec![h.file.clone()],
+            actions: Vec::new(),
+            rebuilt: None,
+        });
+    }
+    plans
+}
+
+/// `(mode, blob, path)` for every file in `rev`'s tree.
+fn tree_entries(repo: &Path, rev: &str) -> Vec<(String, String, String)> {
+    let out = util::git(repo, &["-c", "core.quotepath=off", "ls-tree", "-r", "-z", rev]);
+    out.stdout
+        .split('\0')
+        .filter_map(|rec| {
+            let (meta, path) = rec.split_once('\t')?;
+            let mut m = meta.split_whitespace();
+            let (mode, kind, sha) = (m.next()?, m.next()?, m.next()?);
+            (kind == "blob").then(|| (mode.to_string(), sha.to_string(), path.to_string()))
+        })
+        .collect()
+}
+
+fn cat_blob(repo: &Path, sha: &str) -> Option<Vec<u8>> {
+    let mut cmd = std::process::Command::new("git");
+    crate::util::harden_git(&mut cmd);
+    cmd.args(["-C", repo.to_str()?, "cat-file", "blob", sha]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let out = cmd.output().ok()?;
+    out.status.success().then_some(out.stdout)
+}
+
+fn base_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Take `node <payload> &&` (and its variants) out of package.json scripts.
+pub fn unhook_scripts(text: &str, payloads: &[String]) -> String {
+    let mut s = text.to_string();
+    for p in payloads {
+        let b = base_name(p);
+        let mut names = vec![p.clone(), format!("./{p}"), b.to_string(), format!("./{b}")];
+        names.dedup();
+        for n in &names {
+            for (from, to) in [
+                (format!("node {n} && "), String::new()),
+                (format!("node {n} &&"), String::new()),
+                (format!("node {n}; "), String::new()),
+                (format!(" && node {n}\""), "\"".to_string()),
+                (format!("; node {n}\""), "\"".to_string()),
+            ] {
+                s = s.replace(&from, &to);
+            }
+        }
+    }
+    s
+}
+
+/// Does any package.json script still run one of `payloads`?
+pub fn scripts_call_payload(text: &str, payloads: &[String]) -> bool {
+    payloads.iter().any(|p| {
+        let b = base_name(p);
+        text.contains(&format!("node {b}")) || text.contains(&format!("node ./{b}")) || text.contains(&format!("node {p}"))
+    })
+}
+
+/// `.gitignore` minus the lines that hide the campaign's files. Every other
+/// line is kept byte for byte.
+fn gitignore_unhidden(data: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(data);
+    let mut out = String::new();
+    for line in text.split_inclusive('\n') {
+        let entry = line.trim().trim_start_matches('\u{feff}').trim_start_matches('/');
+        let p = Path::new(entry);
+        if !entry.is_empty() && (scanner::is_artifact(p) || scanner::is_loader_artifact(p)) {
+            continue;
+        }
+        out.push_str(line);
+    }
+    out.into_bytes()
+}
+
+/// `.vscode/settings.json` with automatic tasks switched back off.
+fn settings_disarmed(data: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(data);
+    text.split_inclusive('\n')
+        .filter(|l| !l.to_ascii_lowercase().contains("allowautomatictasks"))
+        .collect::<String>()
+        .into_bytes()
+}
+
+/// Build the clean commit on top of the infected tip. Writes objects, moves no ref.
+pub fn build_repair(plan: &mut RepairPlan) -> Result<String, String> {
+    let repo = plan.repo.clone();
+    let tip = plan.remote_sha.clone();
+    let index = std::env::temp_dir().join(format!("prh-repair-{}-{}.idx", std::process::id(), &tip[..10.min(tip.len())]));
+    let idx = index.to_string_lossy().to_string();
+    let env = [("GIT_INDEX_FILE", idx.as_str())];
+    let result = (|| {
+        let r = git_env(&repo, &["read-tree", &tip], &env, None);
+        if !r.ok {
+            return Err(format!("read-tree: {}", r.stderr.trim()));
+        }
+        let entries = tree_entries(&repo, &tip);
+        let mut actions: Vec<String> = Vec::new();
+        let mut removed_payloads: Vec<String> = Vec::new();
+        let remove = |f: &str| -> Result<(), String> {
+            let r = git_env(&repo, &["update-index", "--force-remove", "--", f], &env, None);
+            if r.ok { Ok(()) } else { Err(format!("remove {f}: {}", r.stderr.trim())) }
+        };
+        let put = |mode: &str, f: &str, data: &[u8]| -> Result<(), String> {
+            let h = git_env(&repo, &["hash-object", "-w", "--stdin"], &[], Some(data));
+            if !h.ok {
+                return Err(format!("hash-object {f}: {}", h.stderr.trim()));
+            }
+            let info = format!("{mode} {}\t{f}\n", h.stdout.trim());
+            let r = git_env(&repo, &["update-index", "--index-info"], &env, Some(info.as_bytes()));
+            if r.ok { Ok(()) } else { Err(format!("update-index {f}: {}", r.stderr.trim())) }
+        };
+
+        // Edits accumulate here and go into the index once, at the end, so a
+        // file touched by two steps (a package.json with an appended payload
+        // *and* a hook) gets both.
+        let mut edited: Vec<(String, String, Vec<u8>)> = Vec::new();
+        let mut deleted: Vec<String> = Vec::new();
+
+        // 1. Files the matcher flagged, plus dropped artefacts anywhere in the tree.
+        for (mode, sha, f) in &entries {
+            let p = Path::new(f);
+            let lower = f.to_ascii_lowercase();
+            if scanner::is_artifact(p) {
+                deleted.push(f.clone());
+                actions.push(format!("deleted dropped artefact {f}"));
+                continue;
+            }
+            let is_pkg = base_name(&lower) == "package.json";
+            if !plan.infected_files.contains(f) && !is_pkg {
+                continue;
+            }
+            let data = cat_blob(&repo, sha).ok_or_else(|| format!("cannot read {f}"))?;
+            if scanner::is_padded_dropper(p, &data) {
+                deleted.push(f.clone());
+                removed_payloads.push(f.clone());
+                actions.push(format!("deleted dropper {f}"));
+            } else if is_font_name(f) && !scanner::looks_like_font(&data) {
+                deleted.push(f.clone());
+                removed_payloads.push(f.clone());
+                actions.push(format!("deleted script disguised as a font {f}"));
+            } else if lower.ends_with("tasks.json") || lower.ends_with(".code-workspace") {
+                deleted.push(f.clone());
+                actions.push(format!("deleted folder-open autorun {f}"));
+            } else if lower.ends_with("settings.json") && armed_autorun(&data) && !signatures_critical(&data) {
+                edited.push((mode.clone(), f.clone(), settings_disarmed(&data)));
+                actions.push(format!("switched automatic tasks off in {f}"));
+            } else if signatures_critical(&data) {
+                let Some(clean) = crate::healer::strip(&data) else {
+                    return Err(format!("{f}: no known way to strip this payload - clean it by hand"));
+                };
+                // All payload: once stripped, nothing at all is left. (Not "little
+                // is left" - an honest postcss.config.mjs is 50 bytes.)
+                if clean.iter().all(|b| b.is_ascii_whitespace()) {
+                    deleted.push(f.clone());
+                    removed_payloads.push(f.clone());
+                    actions.push(format!("deleted dropper {f}"));
+                } else {
+                    edited.push((mode.clone(), f.clone(), clean));
+                    actions.push(format!("stripped appended payload from {f}"));
+                }
+            } else if !is_pkg {
+                return Err(format!("{f}: flagged, but this repair does not know how to clean it - look at it by hand"));
+            }
+        }
+
+        // 2. package.json hooks that run a payload, and .gitignore lines hiding one.
+        let mut hook_targets: Vec<String> = removed_payloads.iter().map(|p| base_name(p).to_string()).collect();
+        if !hook_targets.iter().any(|t| t == "api.js") {
+            hook_targets.push("api.js".to_string());
+        }
+        for (mode, sha, f) in &entries {
+            if f.contains("node_modules/") || deleted.contains(f) {
+                continue;
+            }
+            let name = base_name(f);
+            let is_pkg = name.eq_ignore_ascii_case("package.json");
+            if !is_pkg && !name.eq_ignore_ascii_case(".gitignore") {
+                continue;
+            }
+            let current = match edited.iter().position(|(_, e, _)| e == f) {
+                Some(i) => edited.remove(i).2,
+                None => cat_blob(&repo, sha).ok_or_else(|| format!("cannot read {f}"))?,
+            };
+            let fixed = if is_pkg {
+                unhook_scripts(&String::from_utf8_lossy(&current), &hook_targets).into_bytes()
+            } else {
+                gitignore_unhidden(&current)
+            };
+            if fixed != current {
+                actions.push(if is_pkg {
+                    format!("removed payload hooks from {f} scripts")
+                } else {
+                    format!("removed lines hiding the campaign's files from {f}")
+                });
+            }
+            let original = cat_blob(&repo, sha).unwrap_or_default();
+            if fixed != original {
+                edited.push((mode.clone(), f.clone(), fixed));
+            }
+        }
+
+        for f in &deleted {
+            remove(f)?;
+        }
+        for (mode, f, data) in &edited {
+            put(mode, f, data)?;
+        }
+
+        let tree = git_env(&repo, &["write-tree"], &env, None);
+        if !tree.ok {
+            return Err(format!("write-tree: {}", tree.stderr.trim()));
+        }
+        let tree = tree.stdout.trim().to_string();
+        if rev_parse(&repo, &format!("{tip}^{{tree}}")).as_deref() == Some(tree.as_str()) {
+            return Err("nothing to change - the matcher flagged files this repair does not know how to clean".into());
+        }
+        // Your own git identity: this is a new commit, not a rewrite of anyone's.
+        let made = git_env(&repo, &["commit-tree", &tree, "-p", &tip], &[], Some(REPAIR_MESSAGE.as_bytes()));
+        if !made.ok {
+            return Err(format!("commit-tree: {}", made.stderr.trim()));
+        }
+        let new = made.stdout.trim().to_string();
+
+        // Never push something that is still infected.
+        let still = infected_files_on(&repo, &new);
+        if !still.is_empty() {
+            return Err(format!("repaired commit would still carry {} - not pushing", still.join(", ")));
+        }
+        for (_, _, f) in tree_entries(&repo, &new) {
+            if base_name(&f).eq_ignore_ascii_case("package.json") && !f.contains("node_modules/") {
+                if let Some(data) = blob_at(&repo, &new, &f) {
+                    if scripts_call_payload(&String::from_utf8_lossy(&data), &hook_targets) {
+                        return Err(format!("{f} still runs a payload - not pushing"));
+                    }
+                }
+            }
+        }
+        plan.actions = actions;
+        Ok(new)
+    })();
+    let _ = std::fs::remove_file(&index);
+    let new = result?;
+    plan.rebuilt = Some(new.clone());
+    Ok(new)
+}
+
+fn signatures_critical(data: &[u8]) -> bool {
+    crate::signatures::has_critical(data)
+}
+
+/// Build the repair and push it as a fast-forward (never forced).
+pub fn apply_repair(plan: &mut RepairPlan, dry: bool) -> Result<String, String> {
+    let new = build_repair(plan)?;
+    let short = |s: &str| s[..10.min(s.len())].to_string();
+    let stat = util::git(&plan.repo, &["diff", "--shortstat", &plan.remote_sha, &new]).stdout.trim().to_string();
+    if dry {
+        return Ok(format!("would add {} on top of {}/{} {} ({stat})", short(&new), plan.remote, plan.branch, short(&plan.remote_sha)));
+    }
+    let spec = format!("{new}:refs/heads/{}", plan.branch);
+    let push = util::git(&plan.repo, &["push", &plan.remote, &spec]);
+    if !push.ok {
+        let why = push.stderr.trim();
+        if why.contains("non-fast-forward") || why.contains("rejected") || why.contains("fetch first") {
+            return Err(format!("someone pushed to {}/{} since the audit - nothing was overwritten; run again", plan.remote, plan.branch));
+        }
+        return Err(format!("push failed: {why}"));
+    }
+    let _ = util::git(&plan.repo, &["fetch", &plan.remote, "--prune", "--quiet"]);
+    let remote_ref = format!("refs/remotes/{}/{}", plan.remote, plan.branch);
+    let still = infected_files_on(&plan.repo, &remote_ref);
+    if !still.is_empty() {
+        return Err(format!("pushed, but {remote_ref} still carries: {}", still.join(", ")));
+    }
+    Ok(format!("{}/{} cleaned by {} on top of {} ({stat})", plan.remote, plan.branch, short(&new), short(&plan.remote_sha)))
+}
+
+// ---------------------------------------------------------------------------
 // Pre-commit protection
 // ---------------------------------------------------------------------------
 
@@ -1050,4 +1422,437 @@ pub fn stage(repo: &Path, file: &Path) -> bool {
         return false;
     }
     util::git(repo, &["add", "--", &rel_s]).ok
+}
+
+// ---------------------------------------------------------------------------
+// Bare clones, write access, and who can fix a branch
+// ---------------------------------------------------------------------------
+
+/// True when `p` is a bare repository: a `--bare` clone, a mirror, or
+/// somebody's actual origin on disk. Nothing in it is ever checked out.
+pub fn is_bare(p: &Path) -> bool {
+    let out = util::git(p, &["rev-parse", "--is-bare-repository"]);
+    out.ok && out.stdout.trim() == "true"
+}
+
+/// The remotes configured in `repo`.
+pub fn remotes(repo: &Path) -> Vec<String> {
+    let out = util::git(repo, &["remote"]);
+    out.stdout.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
+}
+
+/// Audit every branch of a bare repository.
+///
+/// A bare mirror made by `remote::mirror` keeps the remote's branches under
+/// `refs/remotes/origin/*`, exactly as a working clone does, so every plan
+/// that expects that layout (repair, excise, write-access probes) works on it
+/// unchanged. A plain bare repository - somebody's origin on disk - has only
+/// `refs/heads/*`: those *are* its branches and are reported as such.
+pub fn scan_bare(repo: &Path) -> Vec<RefHit> {
+    let mut out = Vec::new();
+    if !is_bare(repo) {
+        return out;
+    }
+    let all = refs(repo);
+    let tracking: Vec<String> = all.iter().filter(|r| r.starts_with("refs/remotes/")).cloned().collect();
+    let chosen = if tracking.is_empty() { all } else { tracking };
+    for git_ref in chosen {
+        for (file, iocs) in critical_on(repo, &git_ref) {
+            out.push(RefHit { repo: repo.to_path_buf(), git_ref: git_ref.clone(), file, iocs });
+        }
+    }
+    out
+}
+
+/// `scan_history` for a bare repository as well as a working one.
+///
+/// `scan_history` refuses anything without a work tree, which a bare mirror
+/// never has. The walk itself needs only the object database.
+pub fn scan_history_any(repo: &Path, do_fetch: bool) -> Vec<HistoryHit> {
+    if !is_bare(repo) {
+        return scan_history(repo, do_fetch);
+    }
+    if do_fetch {
+        fetch(repo);
+    }
+    let listing = util::git(repo, &["rev-list", "--objects", "--all"]);
+    let mut want: Vec<(String, String)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for line in listing.stdout.lines() {
+        let Some((sha, path)) = line.trim_end().split_once(' ') else { continue };
+        if sha.len() < 40 || path.is_empty() || is_noise_path(path) || !seen.insert(sha.to_string()) {
+            continue;
+        }
+        want.push((sha.to_string(), path.to_string()));
+    }
+    if want.is_empty() {
+        return Vec::new();
+    }
+    let by_sha: std::collections::HashMap<&str, &str> = want.iter().map(|(s, p)| (s.as_str(), p.as_str())).collect();
+    let mut out = Vec::new();
+    for (sha, kind, data) in batch_cat_file(repo, want.iter().map(|(s, _)| s.as_str())) {
+        if kind != "blob" || data.is_empty() || !crate::signatures::has_critical(&data) || scanner::is_exempt(&data) {
+            continue;
+        }
+        let path = by_sha.get(sha.as_str()).copied().unwrap_or("").to_string();
+        let mut iocs: Vec<String> = crate::signatures::scan(&data).into_iter().map(|h| h.ioc.to_string()).collect();
+        iocs.dedup();
+        out.push(HistoryHit { repo: repo.to_path_buf(), size: data.len() as u64, blob: sha, path, iocs });
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path).then(a.blob.cmp(&b.blob)));
+    out
+}
+
+/// Run `git` with a wall-clock limit, killing it when the limit passes.
+///
+/// Every prompt is disabled, as in `util::git`; this adds the one thing that
+/// function cannot give a caller talking to the network: a guarantee that it
+/// returns. A fetch from a host that accepts the connection and then says
+/// nothing would otherwise hang an audit forever.
+pub fn git_timeout(repo: Option<&Path>, args: &[&str], env: &[(&str, &str)], secs: u64) -> util::Output {
+    let mut cmd = std::process::Command::new("git");
+    util::harden_git(&mut cmd);
+    if let Some(r) = repo {
+        cmd.arg("-C").arg(r);
+    }
+    cmd.args(args);
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GCM_INTERACTIVE", "never");
+    cmd.env("GIT_ASKPASS", "");
+    cmd.env("SSH_ASKPASS", "");
+    cmd.env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    run_with_limit(cmd, secs)
+}
+
+/// Spawn `cmd`, wait at most `secs`, kill it otherwise.
+fn run_with_limit(mut cmd: std::process::Command, secs: u64) -> util::Output {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return util::Output { ok: false, stdout: String::new(), stderr: e.to_string() },
+    };
+    // Drain both pipes on their own threads so a chatty child never blocks on
+    // a full pipe while we are only watching the clock.
+    let mut so = child.stdout.take();
+    let mut se = child.stderr.take();
+    let t_out = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        if let Some(s) = so.as_mut() {
+            let _ = s.read_to_end(&mut b);
+        }
+        b
+    });
+    let t_err = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        if let Some(s) = se.as_mut() {
+            let _ = s.read_to_end(&mut b);
+        }
+        b
+    });
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break Some(st),
+            Ok(None) if start.elapsed() >= Duration::from_secs(secs) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(40)),
+            Err(_) => break None,
+        }
+    };
+    let stdout = String::from_utf8_lossy(&t_out.join().unwrap_or_default()).into_owned();
+    let stderr = String::from_utf8_lossy(&t_err.join().unwrap_or_default()).into_owned();
+    match status {
+        Some(st) => util::Output { ok: st.success(), stdout, stderr },
+        None => util::Output {
+            ok: false,
+            stdout,
+            stderr: format!("timed out after {secs}s{}{}", if stderr.trim().is_empty() { "" } else { ": " }, stderr.trim()),
+        },
+    }
+}
+
+/// `(host, owner, name)` for a remote URL that names a project.
+///
+/// Handles the forms github.com, gitlab.com and bitbucket.org hand out -
+/// `https://host/owner/name(.git)`, `ssh://git@host(:port)/owner/name`,
+/// `git@host:owner/name` - plus anything else shaped like them. A GitLab
+/// subgroup path keeps its groups in `owner` (`group/sub`). Local paths and
+/// `file://` URLs name no owner and come back `None`.
+pub fn parse_remote_url(url: &str) -> Option<(String, String, String)> {
+    let u = url.trim().trim_end_matches('/');
+    let (host, path) = if let Some(i) = u.find("://") {
+        let rest = &u[i + 3..];
+        let (hostport, path) = rest.split_once('/')?;
+        let host = hostport.rsplit('@').next()?.split(':').next()?;
+        (host.to_string(), path.to_string())
+    } else if let Some((hostpart, path)) = u.split_once(':') {
+        // scp-like `git@host:owner/name`; a one-letter "host" is a drive letter.
+        if hostpart.len() <= 1 || hostpart.contains('/') || hostpart.contains('\\') {
+            return None;
+        }
+        let host = hostpart.rsplit('@').next()?;
+        (host.to_string(), path.trim_start_matches('/').to_string())
+    } else {
+        return None;
+    };
+    if host.is_empty() || (!host.contains('.') && host != "localhost") {
+        return None;
+    }
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if segs.len() < 2 {
+        return None;
+    }
+    let last = segs[segs.len() - 1];
+    let name = last.strip_suffix(".git").unwrap_or(last);
+    if name.is_empty() {
+        return None;
+    }
+    Some((host.to_ascii_lowercase(), segs[..segs.len() - 1].join("/"), name.to_string()))
+}
+
+/// Whether the person running this tool can push to a remote, and who owns it.
+#[derive(Debug, Clone)]
+pub struct Access {
+    /// `Some(true)` pushes are accepted, `Some(false)` they are refused,
+    /// `None` it could not be determined - `how` says why.
+    pub can_write: Option<bool>,
+    /// How the answer was reached, or why there is none.
+    pub how: String,
+    /// The account or group that owns the project (`""` when the URL names none).
+    pub owner: String,
+    /// `owner/name` of the project (`""` when the URL names none).
+    pub project: String,
+    /// The remote's push URL.
+    pub url: String,
+}
+
+/// The push URL of `remote`, or `remote` itself when it already is a URL.
+pub fn remote_url(repo: &Path, remote: &str) -> String {
+    let out = util::git(repo, &["remote", "get-url", "--push", remote]);
+    let t = out.stdout.trim();
+    if out.ok && !t.is_empty() {
+        t.to_string()
+    } else {
+        remote.to_string()
+    }
+}
+
+/// Find out whether a push to `remote` would be accepted, without pushing.
+///
+/// Two probes. On github.com, `gh api repos/<owner>/<name>` reports the
+/// caller's permissions exactly and in one round trip - used when `gh` is
+/// installed and logged in. Otherwise (and on every other host) a
+/// `git push --dry-run` of an existing branch at its own current commit: a
+/// no-op the server still has to authorise, so a read-only account is told
+/// "permission denied" and a writer is told "everything up-to-date". Neither
+/// probe changes anything anywhere.
+pub fn write_access(repo: &Path, remote: &str) -> Access {
+    let url = remote_url(repo, remote);
+    let (host, owner, name) = parse_remote_url(&url).unwrap_or_default();
+    let project = if owner.is_empty() { String::new() } else { format!("{owner}/{name}") };
+    let mut acc = Access { can_write: None, how: String::new(), owner: owner.clone(), project, url: url.clone() };
+
+    if host == "github.com" && !owner.is_empty() {
+        let endpoint = format!("repos/{owner}/{name}");
+        let mut gh = std::process::Command::new("gh");
+        gh.args(["api", &endpoint, "--jq", ".permissions.push"]);
+        gh.env("GH_PROMPT_DISABLED", "1").env("GH_NO_UPDATE_NOTIFIER", "1");
+        let out = run_with_limit(gh, 30);
+        match out.stdout.trim() {
+            "true" => {
+                acc.can_write = Some(true);
+                acc.how = "gh api: permissions.push is true".into();
+                return acc;
+            }
+            "false" => {
+                acc.can_write = Some(false);
+                acc.how = "gh api: permissions.push is false".into();
+                return acc;
+            }
+            _ => {}
+        }
+    }
+
+    // A branch we know exists, at the commit we already have: a no-op push.
+    let prefix = format!("refs/remotes/{remote}/");
+    let listing = util::git(repo, &["for-each-ref", "--format=%(refname) %(objectname)", &prefix]);
+    let probe = listing
+        .stdout
+        .lines()
+        .filter_map(|l| l.trim().split_once(' '))
+        .filter(|(r, _)| !r.ends_with("/HEAD"))
+        .map(|(r, sha)| (r.trim_start_matches(prefix.as_str()).to_string(), sha.to_string()))
+        .next();
+    let Some((branch, sha)) = probe else {
+        acc.how = format!("no fetched branch of {remote} to probe with (fetch first)");
+        return acc;
+    };
+    let spec = format!("{sha}:refs/heads/{branch}");
+    let out = git_timeout(Some(repo), &["push", "--dry-run", remote, &spec], &[], 60);
+    let text = format!("{}\n{}", out.stdout, out.stderr);
+    let (can_write, how) = classify_push_probe(out.ok, &branch, &text);
+    acc.can_write = can_write;
+    acc.how = how;
+    acc
+}
+
+/// Read a `git push --dry-run` outcome as a verdict on write access.
+///
+/// Hosts say "no" in a few fixed ways - GitHub `Permission to X denied to
+/// user` / `Write access to repository not granted` / HTTP 403, GitLab `You
+/// are not allowed to push code`, Bitbucket `Forbidden` - and those mean the
+/// caller is known and read-only. A missing or failed credential (`could not
+/// read Username`, `Permission denied (publickey)`, 401) means nothing about
+/// the account, so that is "unknown", as is any network failure.
+pub fn classify_push_probe(ok: bool, branch: &str, text: &str) -> (Option<bool>, String) {
+    let first = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").to_string();
+    if ok {
+        let detail = if first.is_empty() { String::new() } else { format!(" ({first})") };
+        return (Some(true), format!("git push --dry-run of {branch} at its own commit was accepted{detail}"));
+    }
+    let lower = text.to_ascii_lowercase();
+    let denied = [
+        "permission to ",
+        "denied to ",
+        " 403",
+        "forbidden",
+        "not allowed to push",
+        "you are not allowed",
+        "read-only",
+        "read only",
+        "write access to repository not granted",
+        "no write permission",
+        "insufficient permission",
+        "pre-receive hook declined",
+    ];
+    let unknown = [
+        "could not read username",
+        "could not read password",
+        "terminal prompts disabled",
+        "authentication failed",
+        "permission denied (publickey)",
+        "host key verification failed",
+        " 401",
+        "could not resolve host",
+        "unable to access",
+        "timed out",
+        "connection refused",
+        "does not appear to be a git repository",
+    ];
+    let keyfail = lower.contains("permission denied (publickey)") || lower.contains("could not read username");
+    if !keyfail && denied.iter().any(|d| lower.contains(d)) {
+        (Some(false), format!("git push --dry-run refused: {first}"))
+    } else if unknown.iter().any(|u| lower.contains(u)) {
+        (None, format!("could not authenticate non-interactively, so push access is unknown: {first}"))
+    } else {
+        (None, format!("git push --dry-run failed for another reason: {first}"))
+    }
+}
+
+/// One person who touched an infected file on a branch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pusher {
+    pub name: String,
+    pub email: String,
+    pub sha: String,
+    pub date: String,
+}
+
+/// The people whose commits last touched each of `files` on `git_ref`.
+///
+/// They are the ones who can fix the branch when the person auditing it
+/// cannot push: the author of each commit, and its committer when that is
+/// somebody else. Deduplicated by commit, then by e-mail.
+pub fn who_pushed(repo: &Path, git_ref: &str, files: &[String]) -> Vec<Pusher> {
+    let mut out: Vec<Pusher> = Vec::new();
+    let mut seen_commits: Vec<String> = Vec::new();
+    for f in files {
+        let o = util::git(repo, &["log", "-1", "--format=%an%x1f%ae%x1f%cn%x1f%ce%x1f%H%x1f%cI", git_ref, "--", f]);
+        if !o.ok {
+            continue;
+        }
+        let line = o.stdout.trim();
+        let p: Vec<&str> = line.split('\u{1f}').collect();
+        if p.len() < 6 || seen_commits.contains(&p[4].to_string()) {
+            continue;
+        }
+        seen_commits.push(p[4].to_string());
+        let author = Pusher { name: p[0].to_string(), email: p[1].to_string(), sha: p[4].to_string(), date: p[5].to_string() };
+        if !out.iter().any(|x| x.email == author.email) {
+            out.push(author);
+        }
+        if p[3] != p[1] && !out.iter().any(|x| x.email == p[3]) {
+            out.push(Pusher { name: p[2].to_string(), email: p[3].to_string(), sha: p[4].to_string(), date: p[5].to_string() });
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod access_tests {
+    use super::parse_remote_url;
+
+    fn p(u: &str) -> Option<(String, String, String)> {
+        parse_remote_url(u)
+    }
+
+    #[test]
+    fn parses_hosted_project_urls() {
+        let s = |a: &str, b: &str, c: &str| Some((a.to_string(), b.to_string(), c.to_string()));
+        assert_eq!(p("https://github.com/org/repo.git"), s("github.com", "org", "repo"));
+        assert_eq!(p("https://github.com/org/repo"), s("github.com", "org", "repo"));
+        assert_eq!(p("https://github.com/org/repo/"), s("github.com", "org", "repo"));
+        assert_eq!(p("https://user:tok@github.com/org/repo.git"), s("github.com", "org", "repo"));
+        assert_eq!(p("git@github.com:org/repo.git"), s("github.com", "org", "repo"));
+        assert_eq!(p("ssh://git@github.com/org/repo.git"), s("github.com", "org", "repo"));
+        assert_eq!(p("ssh://git@gitlab.com:2222/group/sub/repo.git"), s("gitlab.com", "group/sub", "repo"));
+        assert_eq!(p("https://gitlab.com/group/sub/repo"), s("gitlab.com", "group/sub", "repo"));
+        assert_eq!(p("git@bitbucket.org:team/thing.git"), s("bitbucket.org", "team", "thing"));
+        assert_eq!(p("https://BitBucket.org/team/thing"), s("bitbucket.org", "team", "thing"));
+    }
+
+    #[test]
+    fn push_probe_outcomes_are_read_the_way_hosts_phrase_them() {
+        use super::classify_push_probe as c;
+        assert_eq!(c(true, "main", "Everything up-to-date\n").0, Some(true));
+        // GitHub, read-only collaborator over https and ssh.
+        let gh_https = "remote: Permission to org/repo.git denied to someone.\nfatal: unable to access 'https://github.com/org/repo.git/': The requested URL returned error: 403\n";
+        assert_eq!(c(false, "main", gh_https).0, Some(false));
+        let gh_ssh = "ERROR: Permission to org/repo.git denied to someone.\nfatal: Could not read from remote repository.\n";
+        assert_eq!(c(false, "main", gh_ssh).0, Some(false));
+        assert_eq!(c(false, "main", "remote: Write access to repository not granted.\nfatal: unable to access 'https://github.com/o/r/': The requested URL returned error: 403\n").0, Some(false));
+        // GitLab and Bitbucket.
+        assert_eq!(c(false, "main", "remote: You are not allowed to push code to this project.\nfatal: Could not read from remote repository.\n").0, Some(false));
+        assert_eq!(c(false, "main", "remote: Forbidden\nfatal: unable to access 'https://bitbucket.org/t/r.git/': The requested URL returned error: 403\n").0, Some(false));
+        // No credential at all says nothing about the account.
+        assert_eq!(c(false, "main", "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n").0, None);
+        assert_eq!(c(false, "main", "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.\n").0, None);
+        assert_eq!(c(false, "main", "fatal: unable to access 'https://github.com/o/r/': The requested URL returned error: 401\n").0, None);
+        assert_eq!(c(false, "main", "timed out after 60s\n").0, None);
+        assert!(c(false, "main", "something new\n").1.contains("another reason"));
+    }
+
+    #[test]
+    fn local_paths_and_file_urls_name_no_owner() {
+        assert_eq!(p("C:\\work\\origin.git"), None);
+        assert_eq!(p("C:/work/origin.git"), None);
+        assert_eq!(p("/srv/git/origin.git"), None);
+        assert_eq!(p("file:///C:/work/origin.git"), None);
+        assert_eq!(p("https://github.com/only-owner"), None);
+        assert_eq!(p(""), None);
+    }
 }

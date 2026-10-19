@@ -11,11 +11,21 @@ extensions, the **npm-loader** (`runtimedev-link`) variant of the AppData
 campaign, **Contagious Interview** keylogger kits, injected **git config**
 (`core.fsmonitor`, hooks, nested bare repositories - "GitSpawn"), install-script
 droppers, pwn-request workflows and **ClickFix** run history - and it can repair
-a **poisoned remote branch** (`repos --fix`). Since 1.2 there is an **AI
-incident-response agent** (`agent`): a Gemini model with all of the above as
-tools, plus file reading, git history, process/persistence listing, web search
-and hash lookups - every change to your machine shown to you for a `y` first.
-The step-by-step is in [`docs/GUIDE.md`](docs/GUIDE.md).
+a **poisoned remote branch**. Since 1.2 there is an **AI incident-response
+agent** (`agent`): a model from the provider of your choice (Claude, OpenAI,
+Gemini, a local Ollama…) with all of the above as tools, plus file reading, git
+history, process/persistence listing, web search and hash lookups - every change
+to your machine shown to you for a `y` first.
+
+Since 1.3 the default branch repair is **`repos --repair`**: one ordinary commit
+on top of each infected remote branch, built inside git's object database
+without checking anything out and pushed as a fast-forward - never a force push,
+so it is safe on branches a team shares. The `api.js` dropper shape is detected
+by its form alone, under any name. And the binary is an **MCP server**
+(`polinrider-hunter mcp`), so Claude Code, Cursor, Codex or Windsurf can drive
+it with no API key of ours. The step-by-step is in
+[`docs/GUIDE.md`](docs/GUIDE.md); agents should read [`AGENTS.md`](AGENTS.md)
+and [`SKILL.md`](SKILL.md).
 
 **Already infected?** Cleaning the files is half the job - whatever ran as you also took
 your git credentials and your tokens. [`docs/AFTER_AN_INFECTION.md`](docs/AFTER_AN_INFECTION.md)
@@ -157,6 +167,21 @@ honest code - Ethereum RPC hostnames, `windowsHide` - and is only ever reported.
 Padding alone is treated as critical *but only inside a file PolinRider is known
 to target*; elsewhere it asks a human to look.
 
+One shape needs no such caution. The `api.js` dropper is a file that is
+*nothing but* a line of 200 or more tabs or spaces followed by a kilobyte or
+more of code. No honest source file begins with 200 blank columns, so that
+shape is critical whatever the file is called (`api.js`, a font name, a
+`.dat`) and whether or not any known string matches - before 1.3 it passed
+branch audits as clean unless its obfuscator happened to emit a signature. A
+`package.json` script that runs such a file (`"dev": "node api.js && next
+dev"`) is flagged with it, as `script-runs-dropper`, because that hook is what
+makes every `npm run dev` execute the payload. Fake fonts now include the
+`.lfk` spelling alongside `.llf` and `.lkf`.
+
+Every git command the tool runs - audits, fetches, the agent's own `git
+status` - has `core.fsmonitor`, hooks and the pager switched off, so auditing
+a hostile repository cannot execute that repository's config.
+
 ### Not flagging the detectors
 
 Every malware scanner contains the strings it hunts for, so any file containing
@@ -169,6 +194,10 @@ is skipped wherever it lives. That is better than us maintaining a list of
 everyone's filenames - a project opts its own gate out explicitly, and the
 exemption travels with the file. A short list of well-known gate filenames
 (`check-malware.mjs`, `security-malware-scan.yml`, …) is skipped too.
+
+The marker is public - it is in this README - so it cannot excuse a padded
+dropper or a script that runs one. A scanner quotes indicator *strings*; it
+does not begin with a 200-column pad and kilobytes of code.
 
 ---
 
@@ -210,6 +239,9 @@ contains; a real `.env` that merely picked up the key is never destroyed.
 | NestJS `src/main.ts` dropper: injected `import 'dotenv/config'` + `(async () => { atob(AUTH_API_KEY) … eval })();` | signatures | the IIFE block and the injected import are excised; the bootstrap either side is untouched |
 | Dropped `.env` carrying only `AUTH_API_KEY` | signatures | file deleted and untracked from git - but only if the key is essentially all it holds |
 | Payload disguised as a webfont (`public/fonts/*.woff2` that is really JavaScript) | font magic bytes vs. extension | file deleted |
+| The `api.js` dropper: one line of 200+ tabs/spaces, then ≥1 KB of code, nothing else - under any name | file shape alone (`padded-dropper`); the detector marker cannot exempt it | file deleted; on a branch, removed by `--repair` |
+| `package.json` script running that file (`node api.js && …`) | `script-runs-dropper` - the script's target is read and checked | reported locally (JSON is never spliced); the hook is dropped by `--repair` on a branch |
+| Fake font under a third spelling, `.lfk` | font magic bytes vs. extension | file deleted |
 | `.vscode/tasks.json` auto-running the payload on `folderOpen` | signatures (`node ./public/fonts`) | **reported, never auto-edited** - splicing JSON would corrupt it, so it names the entry for you to delete |
 | `task.allowAutomaticTasks` arming that task | value-aware check | reported; `"off"` is the hardened setting and is never flagged |
 | Config re-saved as **UTF-16** to slip past NUL-based "binary" checks | BOM detected and the text decoded | reported; automatic removal disabled, because the offsets belong to the decoded text |
@@ -270,23 +302,34 @@ agent [paths...]       Chat with an AI agent that does real work in your termina
 ai [setup|key|use|mode|test|remove]
                        AI providers: anthropic (Claude), openai, gemini (free),
                        openrouter, groq, deepseek, ollama (local), any
-                       OpenAI-compatible endpoint. `ai setup` is guided.
+                       OpenAI-compatible endpoint. `ai setup` is guided;
+                       `ai key <provider>` asks for the key - never put one
+                       on the command line.
+mcp                    Serve the hunter's tools to another AI agent over MCP
+                       on stdio (Claude Code, Cursor, Codex, Windsurf). No key
+                       of ours. Destructive tools dry-run first and need a
+                       second call with confirm:true. See below.
 report [paths...]      Written incident report (AI root-cause with a provider).
-set-key <KEY>          Store a Gemini key (older shortcut for `ai key gemini`).
+set-key                Store a Gemini key (older shortcut for `ai key gemini`);
+                       asks for the key rather than taking it as an argument.
 scan [paths...]        Report only. Exit 1 if anything critical.
 clean [paths...]       Scan, then remove payloads. --dry-run to preview.
-repos [paths...]       Fetch and audit every branch, local and remote-tracking,
-                       plus each repo's git config and hooks. --fix repairs a
-                       poisoned remote branch (see below); --excise removes the
-                       poisoned commit itself, no local copy needed; --history
-                       audits old commits too, not just the tips.
+repos [paths|urls...]  Fetch and audit every branch, local and remote-tracking,
+                       plus each repo's git config and hooks. A URL is audited
+                       through a bare clone in a temp dir, nothing checked out.
+                       --repair cleans each infected remote branch with ONE
+                       forward commit, no force push (the default repair; see
+                       below); --fix force-with-lease-pushes a clean local
+                       branch; --excise removes the poisoned commit itself;
+                       --history audits old commits too, not just the tips.
 procs                  List hidden stage-2 processes. --kill stops them.
 protect / unprotect    Just the pre-commit hook.
 quarantine             List the originals kept aside.
 ```
 
-Flags: `--json`, `--dry-run`, `--quick`, `--no-fetch`, `--history`, `--fix`, `--excise`, `--kill`, `--drives`,
-`--interval <secs>`, `--no-autostart`, `--no-color`.
+Flags: `--json`, `--dry-run`, `--quick`, `--no-fetch`, `--history`, `--repair`, `--fix`, `--excise`, `--kill`, `--drives`,
+`--interval <secs>`, `--no-autostart`, `--no-color`. Env: `POLINRIDER_SKIP_REMOTES=name,name`
+keeps `--repair` off remotes that belong to someone else.
 
 ### Getting it off the machine entirely
 
@@ -363,7 +406,75 @@ It also checks for hidden stage-2 processes on every quick pass.
 **What it will not do.** The guard heals working trees. It never rewrites git
 history and it never pushes. An automated process that force-pushes to shared
 branches is a worse problem than the one it is solving, so the *guard* only
-reports what it finds on a branch.
+reports what it finds on a branch. Repairs are yours to run: `repos --repair`
+adds a commit, `--fix` and `--excise` rewrite.
+
+### Repairing a shared branch: `repos --repair`
+
+`--fix` and `--excise` (below) both replace history, so both need a force push,
+and both refuse - rightly - once teammates have pushed real work on top of the
+infection. On a shared repository that is nearly always. `--repair` leaves
+history alone:
+
+```
+polinrider-hunter repos --repair --dry-run ~/work/repo   # the plan: which branches, which files
+polinrider-hunter repos --repair ~/work/repo             # do it, then re-fetch and re-audit
+polinrider-hunter repos --repair https://github.com/you/repo   # not cloned: a bare clone in a temp dir
+```
+
+For each infected remote branch it builds **one new commit on top of the
+current tip** that removes the infection, and pushes it as an ordinary
+fast-forward. If anyone pushed in the meantime the push is rejected
+(`someone pushed to origin/main since the audit - nothing was overwritten; run
+again`), never overwritten. Nobody's clone breaks; the branch still
+fast-forwards for everyone.
+
+Everything happens inside git's object database through a private index. The
+infected tree is **never checked out**, so nothing that could execute the
+payload - an editor extension loading a config, a live stage 2 re-infecting
+whatever folder it sees, `npm run dev` - ever gets a copy on disk. That last
+one is not hypothetical: on 2026-10-11 a worktree-based cleanup was re-infected
+*while it ran* and committed a fresh `api.js` under the message "remove
+injected PolinRider malware".
+
+What the commit removes: the padded payload lines in config files; padded
+droppers (`api.js` and its font-named twins); `node api.js &&` hooks in
+`package.json` scripts; appended config payloads; folder-open `.vscode` tasks
+and the `task.allowAutomaticTasks` arming; fake fonts; the dropped artefacts
+`branch_structure.json`, `config.bat`, `temp_*push.bat`; and the `.gitignore`
+lines that hid them. The result is re-audited before it is pushed - a commit
+that would still carry an indicator is never pushed - and the branch is
+re-fetched and re-audited after.
+
+It refuses, with the reason, when the matcher flagged a file this repair does
+not know how to clean (look at it by hand), and `POLINRIDER_SKIP_REMOTES=upstream,fork`
+keeps it off remotes that are somebody else's repository. `--json` prints one
+`{"type":"repair",…}` object per branch with `ok`, `dry`, `message` and
+`actions`.
+
+What it does not do: the poisoned commit stays in history, reachable by hash,
+until the owner purges it (`--history` prints the command). A forward commit
+makes the branch safe to pull; it does not make the history clean. When you
+want the commit itself gone and nobody else works on the branch, that is
+`--excise`.
+
+#### Repos you cannot fix
+
+Half the infected branches on a real account belong to someone else - an
+organisation, a client, a fork you contributed to. The audit still reads them,
+and for each infected branch it reports the repository **owner**, **who pushed**
+the infected commits (in this campaign that is the victim whose credential was
+stolen, usually not the attacker's own account) and `can_write` - whether the
+credentials on this machine can push there. `can_write: false` means ask; the
+tool does not try another route.
+
+What to tell that person: run `polinrider-hunter repos --repair` on their
+clone - one normal commit, no force push, nothing infected checked out - or
+accept a pull request carrying the same change (the repair is an ordinary
+commit, so it reviews like one). And that GitHub keeps the poisoned commit in
+the repository's history, in every clone, until **they** purge it with the
+`git filter-repo` command `--history` prints and ask GitHub to collect the
+unreachable objects.
 
 ### Repairing a poisoned remote: `repos --fix`
 
@@ -428,6 +539,136 @@ and a committed `.env`, four `eslint.config.mjs` in the backend, four
 `tailwind.config.js` in the mobile app and one `eslint.config.mjs` in the
 dashboard. Nothing had reported them, because nothing looked.
 
+## The AI agent: `agent`
+
+`polinrider-hunter agent` is a chat in your terminal with a model that has this
+whole tool as its hands. How it works, in one paragraph: you type; the binary
+sends the model a fixed system prompt (its method for incidents - triage,
+scope, contain, eradicate, root cause, recover, report), the list of its
+thirty-odd tools and the conversation; the model answers with *one proposed
+tool call*; the binary classifies that call against your permission mode -
+readers run at once, changes are shown to you first, a short list is refused
+in every mode - runs it itself, and sends the result back, capped at 16 KB and
+marked as untrusted data; and round it goes until the model calls `finish`
+with a summary, asks you something with `ask_user`, or hits 60 steps in one
+turn and pauses. Ctrl-C stops the current step; twice quits.
+
+Permission modes (`--mode`, `/mode`, `ai mode` for the default): `read-only`
+(every change refused), `ask` (the default - every change shown as the exact
+command, file or diff: `y` / `n` with a reason / `e` edit / `a` always, for that
+exact command line / `q`), `workspace-write` (file writes and edits inside the
+project directories run freely; everything else asks) and `full-access`
+(`--yes`; nothing asks except secret stores, which ask in every mode). A real
+push - `repos_repair` with `dry_run: false`, `repos_fix`, `repos_excise` -
+asks unless you are in `full-access`, with no "always".
+
+Since 1.3 the agent is harder to turn against you: keys never appear on
+`curl`'s command line (headers go through a private temp file); the command
+classifier cannot be slipped past with a single `&`, `$()`, backticks, a
+redirect, a quoted `powershell -Command`/`cmd /c` body or `git -c`/
+`--upload-pack`; secret stores (`.env`, `.ssh`, `.git-credentials`, `gh`
+hosts, `.npmrc`, the hunter's own config) are refused unless you approve each
+one; `web_fetch` goes without asking only to a built-in list of research
+sites, with private, loopback and link-local addresses blocked, redirects
+included; every file, command and web result is marked UNTRUSTED and capped at
+16 KB; long sessions are compacted to a per-provider context budget; a
+`finish` mid-turn is handled; and two tools are new - `repos_repair` (dry run
+by default; a real push always asks) and `credential_exposure` (which
+credential stores exist and what to rotate - paths and yes/no, never values).
+`ai setup` and `ai key <provider>` now prompt for the key instead of taking it
+as an argument, because an argument lands in your shell history.
+
+Every turn, tool call and result is appended to `agent\<timestamp>.jsonl` in
+the state directory; reports go to `reports\`. Providers: `anthropic`,
+`openai`, `gemini`, `openrouter`, `groq`, `deepseek`, `ollama`, `custom`. The
+full walk-through, with the tool list and example prompts, is in
+[`docs/GUIDE.md`](docs/GUIDE.md) and on the site.
+
+## From other AI agents: `mcp`
+
+You may already have an agent you trust - Claude Code, Cursor, Codex, Windsurf.
+`polinrider-hunter mcp` starts an MCP (Model Context Protocol) server over
+stdio, so that agent gets the hunter's scanners, audits and repairs as tools
+and you never hand this tool an API key of any kind. The server opens no port
+and talks only to the host that started it.
+
+Tools: `scan`, `clean`, `hunt`, `repos_audit`, `repos_repair`, `repos_history`,
+`processes`, `persistence`, `quarantine_list`, `status`, `access_check`.
+
+Three properties worth knowing before you let an agent loose with it:
+
+- **Destructive tools default to a dry run.** `clean`, `hunt` and
+  `repos_repair` - and the `kill` / `remove` options of `processes` and
+  `persistence` - plan on the first call and write nothing; only a second call
+  with `confirm: true` performs it. The host agent has to show you the plan in
+  between - the protocol leaves it no other way to get the work done.
+- **`repos_audit` and `repos_repair` take local paths or repository URLs.** A
+  URL is audited through a bare clone in a temporary directory: nothing is
+  checked out, no payload lands on disk.
+- **The output names whom to ask.** Every infected branch comes back with
+  whether the current user can push to it (`can_write`), the repository owner
+  and who pushed the infected commits, so a user without write access knows
+  exactly whom to contact.
+
+Registering it (the binary must be on the agent's `PATH`; open a new terminal
+after installing):
+
+```sh
+# Claude Code - this project (writes .mcp.json; the repo ships one) or every project
+claude mcp add --transport stdio --scope project polinrider-hunter -- polinrider-hunter mcp
+claude mcp add --transport stdio --scope user    polinrider-hunter -- polinrider-hunter mcp
+
+# OpenAI Codex CLI
+codex mcp add polinrider-hunter -- polinrider-hunter mcp
+```
+
+```json
+// Claude Code .mcp.json  ·  Cursor .cursor/mcp.json or ~/.cursor/mcp.json
+{
+  "mcpServers": {
+    "polinrider-hunter": { "type": "stdio", "command": "polinrider-hunter", "args": ["mcp"] }
+  }
+}
+```
+
+```toml
+# Codex ~/.codex/config.toml
+[mcp_servers.polinrider-hunter]
+command = "polinrider-hunter"
+args = ["mcp"]
+```
+
+```json
+// Windsurf ~/.codeium/windsurf/mcp_config.json  (Windows: %USERPROFILE%\.codeium\windsurf\mcp_config.json)
+{
+  "mcpServers": {
+    "polinrider-hunter": { "command": "polinrider-hunter", "args": ["mcp"] }
+  }
+}
+```
+
+If the host cannot find the bare command, use the full path the installer
+uses: Windows `C:\Users\<you>\AppData\Local\Programs\polinrider-hunter\polinrider-hunter.exe`
+(doubled backslashes inside JSON), Unix `~/.local/bin/polinrider-hunter` with
+`~` spelled out - not every host expands it.
+
+Then ask the agent in plain words. For *"please remove any malware from my
+remote repos, check incoming changes and check my pc, make sure all are
+clean"* a well-behaved agent will: `hunt` (dry run) and `repos_audit` each
+repository → show you the infected branches, including remote commits you have
+not pulled → `hunt` with `confirm: true` to clean the machine first →
+`repos_repair` dry run per repository → ask → `repos_repair` with
+`confirm: true` → `repos_audit` again → list the branches it could not push to,
+with owner and who pushed → remind you to rotate credentials and install the
+guard. That is the workflow written into [`AGENTS.md`](AGENTS.md).
+
+**Without MCP.** [`SKILL.md`](SKILL.md) is the same playbook in the Agent
+Skills format (YAML `name`/`description` frontmatter, then instructions). Copy
+it to `.claude/skills/polinrider-hunter/SKILL.md` (this project) or
+`~/.claude/skills/polinrider-hunter/SKILL.md` (every project) and Claude Code
+runs the CLI itself when the conversation turns to malware or poisoned
+branches.
+
 ## Beyond PolinRider: what else is covered
 
 | Campaign | Hides as | Detected by | Removed? |
@@ -491,8 +732,14 @@ for how it is wired and how to add macOS and Linux binaries.
 
 ```
 cargo build --release      # target/release/polinrider-hunter
-cargo test                 # unit tests + tests/end_to_end.rs + tests/campaigns.rs
+cargo test                 # unit tests + tests/end_to_end.rs + tests/campaigns.rs + tests/agent.rs
 ```
+
+<!-- TEST-COUNT: 213 at 1.3.0 (151 unit, 62 integration) - keep docs/index.html in step -->
+The suite is 213 tests at 1.3.0. `tests/agent.rs` drives the agent with a
+scripted model: it proves `repos_repair` plans dry by default and pushes only
+with approval, that `credential_exposure` reports paths and never values, and
+that the command classifier and secret-path checks hold.
 
 The end-to-end suite in `tests/` is the one worth reading. It plants each real
 attack shape on disk - spaced and tab-padded config payloads in both CRLF and

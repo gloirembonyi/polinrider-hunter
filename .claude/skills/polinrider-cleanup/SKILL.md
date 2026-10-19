@@ -43,7 +43,21 @@ Compare the twin with the local commit before pushing anything:
 twin=$(git rev-list --reverse <branch>..@{u} | head -1)
 git diff --stat --ignore-cr-at-eol <branch> $twin   # must list ONLY payload files
 ```
-Repair, preferring the exact original:
+Repair. On a shared branch (anyone else may have pushed since the infection) use `--repair`: one
+normal commit on top of the current tip, built in the object database (nothing infected is ever
+checked out - a worktree-based cleanup on 2026-10-11 was re-infected while it ran), pushed as a
+fast-forward and refused if someone pushed in the meantime. It never rewrites history, so it works
+on the ~90 % of team branches that `--fix`/`--excise` refuse as BLOCKED:
+```
+polinrider-hunter repos --repair --dry-run <repo>   # plan: per branch, what would be removed
+polinrider-hunter repos --repair <repo>             # push, re-fetch, re-audit
+POLINRIDER_SKIP_REMOTES=seth polinrider-hunter repos --repair <repo>   # leave someone else's remote alone
+```
+A `BLOCKED ... Write access to repository not granted` line means you cannot push there: report the
+repo, branch, owner and who pushed the infected commit (`git log -1 --format='%an <%ae>' <ref> -- <file>`)
+so the user can ask that person to run `--repair` on their clone.
+
+Only when the branch is yours alone and you want the exact original back:
 ```
 polinrider-hunter repos --fix --dry-run <repo>     # local branch clean -> push it over the remote
 polinrider-hunter repos --excise --dry-run <repo>  # no clean local branch, or twin under a cleanup
@@ -86,6 +100,6 @@ python -I tools/excise_remote.py --owner <user> --local local.txt         # veri
 ## Using the AI agent instead
 
 `polinrider-hunter agent` (after `polinrider-hunter ai setup`) has all of the above as tools
-(`repos_audit`, `repos_fix`, `repos_excise`, `repos_history`, `scan`, `clean`, `persistence`, ...)
+(`repos_audit`, `repos_repair`, `repos_fix`, `repos_excise`, `repos_history`, `scan`, `clean`, `credential_exposure`, `persistence`, ...)
 plus a terminal and file editing. Ask in plain words; it shows every change first in the default
 `ask` mode.

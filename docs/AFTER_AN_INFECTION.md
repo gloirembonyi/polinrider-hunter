@@ -29,7 +29,7 @@ Rotating credentials while a stealer is still running just hands the attacker th
 ones. Clean, *then* rotate.
 
 ```
-polinrider-hunter hunt --fix          # quarantines payloads, strips the padded lines,
+polinrider-hunter hunt                # quarantines payloads, strips the padded lines,
                                       # removes loaders, scheduled tasks and Run keys
 polinrider-hunter hunt --dry-run      # must come back clean
 ```
@@ -127,16 +127,27 @@ and in every clone, forever.
 ## 5. Verify the remote is actually clean
 
 ```
-polinrider-hunter repos --fix    # rewrites infected commits and force-pushes with --force-with-lease
-polinrider-hunter repos          # must report nothing
+polinrider-hunter repos --repair --dry-run   # the plan: one forward commit per infected branch
+polinrider-hunter repos --repair             # push it (fast-forward, never forced), re-audit
+polinrider-hunter repos                      # must report nothing
 ```
 
-`--force-with-lease` refuses to overwrite work that arrived after you last fetched, so a
-push that fails here means *something pushed after you cleaned* - re-run step 1 before
-trying again.
+`--repair` adds one ordinary commit on top of each infected remote branch - built without
+checking anything out, so no payload touches your disk - and pushes it as a fast-forward.
+If the push is rejected, *something pushed after you cleaned* - re-run step 1 before
+trying again. It never overwrites. (`repos --excise` removes the poisoned commit from
+history instead; it is a force push, so only for branches nobody else works on.)
 
 Then, for each repo, check the commit list on the web for authors and dates you do not
 recognise, and check that your default branch is where you expect it to be.
+
+**Branches you cannot push to.** The repair reports, per infected branch, the repository
+owner, who pushed the infected commits and `can_write: false` when your account cannot
+push there. Send that person one message: *run `polinrider-hunter repos --repair` on your
+clone (one normal commit, no force push), or accept the pull request I will open* - and
+tell them GitHub keeps the poisoned commit in history until **they** purge it
+(`repos --history` prints the `git filter-repo` command). Do not try to route around a
+missing permission; the tool does not either.
 
 ---
 
@@ -164,5 +175,11 @@ polinrider-hunter agent --task "audit this machine and my repos, find the root c
 ```
 
 The agent scans, reads what it finds, runs read-only commands, and asks before anything
-that changes the system. It needs a Gemini API key (`polinrider-hunter set-key`); the
-free tier is enough.
+that changes the system. It needs a key for a provider of your choice
+(`polinrider-hunter ai setup` - Gemini's free tier is enough, Ollama needs none), and it
+asks for the key at a prompt rather than taking it on the command line.
+
+Already using Claude Code, Cursor or Codex? Register `polinrider-hunter mcp` as an MCP
+server (snippets in [`GUIDE.md`](GUIDE.md), section 2c) and ask *that* agent to check the
+machine and the repositories - no key of ours needed. Anything destructive dry-runs first
+and needs a second call with `confirm: true`, so you see the plan before it acts.

@@ -198,7 +198,7 @@ pub const MALICIOUS_PACKAGES: &[&str] = &[
 
 /// Data files that should never contain executable code.
 // `llf`/`lkf`: the autorun variant's 2026-09 payload names (`fa-solid-300.llf`).
-const DISGUISE_EXTS: &[&str] = &["woff2", "woff", "ttf", "otf", "eot", "llf", "lkf", "dict", "dat", "bin"];
+const DISGUISE_EXTS: &[&str] = &["woff2", "woff", "ttf", "otf", "eot", "llf", "lkf", "lfk", "dict", "dat", "bin"];
 
 /// Known third-party malware gates. They contain signatures by design.
 const KNOWN_DETECTORS: &[&str] = &[
@@ -628,6 +628,15 @@ const DETECTOR_IDIOMS: &[&str] = &[
     "malware",
 ];
 
+/// Shapes no detector has a reason to carry, so no marker can excuse them.
+///
+/// The exemption marker is public - it is in this README - so a payload that
+/// includes it would otherwise walk straight past. A scanner quotes indicator
+/// *strings*; it does not begin with a 200-column pad and kilobytes of code.
+fn unexemptable(hits: &[Hit]) -> bool {
+    hits.iter().any(|h| h.ioc == DROPPER_IOC || h.ioc == "script-runs-dropper")
+}
+
 /// Is this content exempt from reporting - a declared detector, or a scanner
 /// whose own pattern strings tripped the matcher?
 pub fn is_exempt(data: &[u8]) -> bool {
@@ -772,8 +781,101 @@ fn is_package_json(path: &Path) -> bool {
     path.file_name().and_then(|s| s.to_str()) == Some("package.json")
 }
 
+/// Indicator for a file that is nothing but a whitespace run and code.
+pub const DROPPER_IOC: &str = "padded-dropper";
+
+/// Extensions a dropper has been seen under: script files, and data files the
+/// autorun task feeds to `node`.
+const DROPPER_EXTS: &[&str] = &["js", "mjs", "cjs", "ts", "llf", "lkf", "lfk", "woff", "woff2", "ttf", "otf", "eot", "dict", "dat"];
+
+/// The `api.js` dropper (and its font-named twin): a line that starts with
+/// hundreds of tabs or spaces and then carries kilobytes of obfuscated code,
+/// with essentially nothing else in the file.
+///
+/// The appended-payload check only trusts padding inside a config PolinRider
+/// targets, because a pad after real code elsewhere can be formatting. This
+/// shape has no real code to be formatting for: an honest source file does not
+/// begin with 200 blank columns, and one whose only content sits there is a
+/// payload whatever it is called. Before this, `api.js` - and the
+/// `node api.js &&` hooks that run it on every `dev`/`build` - passed branch
+/// audits as clean unless its obfuscator happened to emit a known string.
+pub fn is_padded_dropper(path: &Path, data: &[u8]) -> bool {
+    let ext = path.extension().and_then(|s| s.to_str()).map(|e| e.to_ascii_lowercase()).unwrap_or_default();
+    if !DROPPER_EXTS.contains(&ext.as_str()) || data.len() < 1200 {
+        return false;
+    }
+    let text = String::from_utf8_lossy(data);
+    let mut payload_line = false;
+    let mut other = 0usize;
+    for line in text.lines() {
+        let body = line.trim_start_matches([' ', '\t']);
+        let pad = line.len() - body.len();
+        if pad >= 200 && body.trim_end().len() >= 1000 {
+            payload_line = true;
+        } else {
+            other += line.split_whitespace().map(str::len).sum::<usize>();
+        }
+    }
+    payload_line && other < 64
+}
+
+/// The files a package.json runs with `node <file>` anywhere in its text
+/// (in practice, its scripts), `./` stripped.
+pub fn node_targets(data: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(data);
+    let mut out = Vec::new();
+    for (i, _) in text.match_indices("node ") {
+        // Whole word only: not `nodemon `, not `npx-node `.
+        let before = text[..i].chars().next_back();
+        if before.map(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_').unwrap_or(false) {
+            continue;
+        }
+        let Some(tok) = text[i + 5..].split_whitespace().next() else { continue };
+        let tok = tok.trim_end_matches(['"', ',', ';', '&']).trim_start_matches("./");
+        if tok.is_empty() || tok.starts_with('-') || tok.contains("..") {
+            continue;
+        }
+        if !out.iter().any(|t: &String| t == tok) {
+            out.push(tok.to_string());
+        }
+    }
+    out
+}
+
+/// A package.json that runs a padded dropper with `node` - the hook that makes
+/// every `npm run dev` execute the payload. `sibling` reads a file relative to
+/// the package.json.
+pub fn runs_dropper(data: &[u8], sibling: &dyn Fn(&str) -> Option<Vec<u8>>) -> Option<Hit> {
+    for target in node_targets(data) {
+        let Some(bytes) = sibling(&target) else { continue };
+        if is_padded_dropper(Path::new(&target), &bytes) {
+            let text = String::from_utf8_lossy(data);
+            let at = text.find(&target).unwrap_or(0);
+            return Some(Hit {
+                ioc: "script-runs-dropper",
+                sev: Severity::Critical,
+                why: "a package.json script runs a padded dropper with node on every dev/build/start",
+                start: at,
+                end: at + target.len(),
+                line: text[..at].matches('\n').count() + 1,
+            });
+        }
+    }
+    None
+}
+
 /// Findings that need the file's *shape*, not just its bytes.
 fn structural_hits(path: &Path, data: &[u8]) -> Vec<Hit> {
+    if is_padded_dropper(path, data) {
+        return vec![Hit {
+            ioc: DROPPER_IOC,
+            sev: Severity::Critical,
+            why: "the whole file is a whitespace pad followed by code - a PolinRider dropper (api.js shape)",
+            start: 0,
+            end: data.len(),
+            line: 1,
+        }];
+    }
     if is_package_json(path) {
         return scan_package_json(data);
     }
@@ -975,7 +1077,16 @@ pub fn scan_file(path: &Path) -> Option<Finding> {
     // a hit to suppress.
     let mut hits = refine(path, signatures::scan(&data));
     hits.extend(structural_hits(path, &data));
-    if !hits.is_empty() && is_exempt(&data) {
+    // A package.json whose scripts run a dropper sitting beside it. (For a git
+    // blob the branch audit makes the same check against the ref's tree.)
+    if is_package_json(path) {
+        if let Some(dir) = path.parent() {
+            if let Some(h) = runs_dropper(&data, &|rel| std::fs::read(dir.join(rel)).ok()) {
+                hits.push(h);
+            }
+        }
+    }
+    if !hits.is_empty() && is_exempt(&data) && !unexemptable(&hits) {
         return None;
     }
     if disguised_font(path, &data) {
@@ -1026,7 +1137,7 @@ pub fn scan_blob(name: &Path, data: &[u8]) -> Option<Finding> {
     }
     let mut hits = refine(name, signatures::scan(data));
     hits.extend(structural_hits(name, data));
-    if !hits.is_empty() && is_exempt(data) {
+    if !hits.is_empty() && is_exempt(data) && !unexemptable(&hits) {
         return None;
     }
     if hits.is_empty() {

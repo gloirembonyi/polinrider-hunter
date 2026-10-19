@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "polinrider-hunter": {
+      "type": "stdio",
+      "command": "polinrider-hunter",
+      "args": ["mcp"]
+    }
+  }
+}

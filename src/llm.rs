@@ -81,13 +81,16 @@ pub fn resolve_provider(cli: Option<&str>, cfg: &Config) -> Option<String> {
     PROVIDERS.iter().filter(|p| p.needs_key).find(|p| key_for(p.id, cfg).is_some()).map(|p| p.id.to_string())
 }
 
-/// Mask a key for display: first 6, last 4.
+/// Mask a key for display: first 6, last 4 (by character, so a pasted key
+/// with a stray non-ASCII character cannot panic the slice).
 pub fn mask(k: &str) -> String {
-    let k = k.trim();
-    if k.len() <= 12 {
-        return "*".repeat(k.len());
+    let chars: Vec<char> = k.trim().chars().collect();
+    if chars.len() <= 12 {
+        return "*".repeat(chars.len());
     }
-    format!("{}…{}", &k[..6], &k[k.len() - 4..])
+    let head: String = chars[..6].iter().collect();
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("{head}…{tail}")
 }
 
 /// Build the model for `provider_id`.
@@ -101,7 +104,7 @@ pub fn build(provider_id: &str, model: Option<&str>, key: Option<&str>, cfg: &Co
     let key = key.map(str::to_string).or_else(|| key_for(p.id, cfg));
     if p.needs_key && key.is_none() {
         return Err(format!(
-            "no API key for {}. Get one at {}, then run\n  polinrider-hunter ai key {} <KEY>\nor set {}.",
+            "no API key for {}. Get one at {}, then run\n  polinrider-hunter ai key {}      (paste the key when asked)\nor set {}, or run the guided `polinrider-hunter ai setup`.",
             p.label, p.key_url, p.id, p.env
         ));
     }
@@ -117,7 +120,12 @@ pub fn build(provider_id: &str, model: Option<&str>, key: Option<&str>, cfg: &Co
     });
     match p.id {
         "gemini" => Ok(Box::new(gemini::Gemini::new(&key, model.as_deref()))),
-        "anthropic" => Ok(Box::new(Anthropic::new(&key, model.as_deref().unwrap_or(p.default_model), &cfg.ai_base_url))),
+        // A base URL is only ever the configured provider's: a proxy set up for
+        // `custom` must never receive the Anthropic key.
+        "anthropic" => {
+            let base = if cfg.ai_provider.eq_ignore_ascii_case("anthropic") { cfg.ai_base_url.as_str() } else { "" };
+            Ok(Box::new(Anthropic::new(&key, model.as_deref().unwrap_or(p.default_model), base)))
+        }
         _ => {
             let base = if p.id == "custom" || !cfg.ai_base_url.trim().is_empty() && cfg.ai_provider.eq_ignore_ascii_case(p.id) {
                 cfg.ai_base_url.trim().to_string()
@@ -222,21 +230,27 @@ pub struct Anthropic {
 
 impl Anthropic {
     pub fn new(key: &str, model: &str, base: &str) -> Anthropic {
-        let base = if base.trim().is_empty() || !base.contains("anthropic") { "https://api.anthropic.com".to_string() } else { base.trim().trim_end_matches('/').to_string() };
+        // Any configured endpoint is honoured (a gateway or proxy need not have
+        // "anthropic" in its name); `/v1/messages` is appended, so a base that
+        // already ends in `/v1` is trimmed back.
+        let b = base.trim().trim_end_matches('/');
+        let base = if b.is_empty() { "https://api.anthropic.com".to_string() } else { b.trim_end_matches("/v1").to_string() };
         Anthropic { key: key.trim().to_string(), model: model.trim().to_string(), base, last_usage: None }
     }
 
     /// The request body, built from the shared history.
     pub fn body(&self, system: &str, contents: &[Json], tools: &Json) -> Json {
         let ids = response_ids(contents);
-        let mut messages: Vec<Json> = Vec::new();
+        // (role, blocks); consecutive turns of one role are merged so every
+        // tool_result of a turn sits in ONE user message, ahead of any text.
+        let mut messages: Vec<(&str, Vec<Json>)> = Vec::new();
         for (ti, turn) in contents.iter().enumerate() {
             let role = if turn.str_of("role") == "model" { "assistant" } else { "user" };
             // Replay this provider's own assistant content verbatim: thinking
             // blocks must come back unchanged or the API rejects them.
             if role == "assistant" && turn.str_of("provider") == "anthropic" {
-                if let Some(raw) = turn.get("raw") {
-                    messages.push(Json::obj(vec![("role", Json::str(role)), ("content", raw.clone())]));
+                if let Some(raw) = turn.get("raw").and_then(|r| r.as_arr()).filter(|r| !r.is_empty()) {
+                    push_blocks(&mut messages, role, raw.clone());
                     continue;
                 }
             }
@@ -266,12 +280,26 @@ impl Anthropic {
                     ]));
                 }
             }
-            if blocks.is_empty() {
-                blocks.push(Json::obj(vec![("type", Json::str("text")), ("text", Json::str("(continue)"))]));
+            // An empty turn is not replayed: an empty content array is a 400.
+            if !blocks.is_empty() {
+                push_blocks(&mut messages, role, blocks);
             }
-            messages.push(Json::obj(vec![("role", Json::str(role)), ("content", Json::Arr(blocks))]));
         }
-        let tool_list: Vec<Json> = tools
+        // The API wants the first message from the user.
+        if messages.first().map(|(r, _)| *r) != Some("user") {
+            messages.insert(0, ("user", vec![Json::obj(vec![("type", Json::str("text")), ("text", Json::str("(continue)"))])]));
+        }
+        let messages: Vec<Json> = messages
+            .into_iter()
+            .map(|(role, mut blocks)| {
+                // tool_result blocks must lead a user message.
+                if role == "user" {
+                    blocks.sort_by_key(|b| if b.str_of("type") == "tool_result" { 0 } else { 1 });
+                }
+                Json::obj(vec![("role", Json::str(role)), ("content", Json::Arr(blocks))])
+            })
+            .collect();
+        let mut tool_list: Vec<Json> = tools
             .as_arr()
             .cloned()
             .unwrap_or_default()
@@ -284,25 +312,31 @@ impl Anthropic {
                 ])
             })
             .collect();
+        // Prompt caching: the tool list and the system prompt are the same on
+        // every request, so mark the end of each (render order is tools ->
+        // system -> messages) and pay a fraction for that prefix after the
+        // first call.
+        if let Some(Json::Obj(last)) = tool_list.last_mut() {
+            last.push(("cache_control".into(), ephemeral()));
+        }
         Json::obj(vec![
             ("model", Json::str(&self.model)),
             ("max_tokens", Json::Num(16000.0)),
-            ("system", Json::str(system)),
+            ("system", Json::arr(vec![Json::obj(vec![("type", Json::str("text")), ("text", Json::str(system)), ("cache_control", ephemeral())])])),
             ("messages", Json::Arr(messages)),
             ("tools", Json::Arr(tool_list)),
-            // Thinking stays on (adaptive). The agent trims old tool results
-            // when the context grows, which edits history; drop_block lets the
-            // API drop the thinking blocks that edit invalidates instead of
-            // rejecting the whole request.
+            ("tool_choice", Json::obj(vec![("type", Json::str("auto"))])),
+            // Thinking stays on (adaptive; current Claude models cannot turn it
+            // off). Context compaction trims old tool results, which edits
+            // history; `drop_block` (beta `thinking-binding-controls-2026-08-01`)
+            // lets the API drop the thinking blocks that edit invalidates
+            // instead of rejecting the request.
             ("thinking", Json::obj(vec![
                 ("type", Json::str("adaptive")),
                 ("block_binding", Json::obj(vec![("prefix_mismatch_behavior", Json::str("drop_block"))])),
             ])),
+            // Opus 5.5 defaults to medium; agentic incident work wants high.
             ("output_config", Json::obj(vec![("effort", Json::str("high"))])),
-            // Malware analysis can trip a safety classifier; the server-side
-            // fallback re-runs a declined turn on a suitable model instead of
-            // stopping the investigation.
-            ("fallbacks", Json::str("default")),
         ])
     }
 
@@ -364,22 +398,28 @@ impl Model for Anthropic {
         let headers = [
             ("x-api-key", self.key.as_str()),
             ("anthropic-version", "2023-06-01"),
-            ("anthropic-beta", "thinking-binding-controls-2026-08-01,server-side-fallback-2026-07-01"),
+            ("anthropic-beta", "thinking-binding-controls-2026-08-01"),
         ];
-        let mut last = String::new();
-        for attempt in 0..3 {
-            let text = gemini::http_post_json_timeout(&url, &headers, &body.to_string(), 600)?;
-            let resp = json::parse(&text).map_err(|e| format!("unreadable reply from Anthropic: {e}: {}", &text[..text.len().min(300)]))?;
-            // Retry overload / rate limit with a short backoff.
-            let kind = resp.path(&["error", "type"]).and_then(|t| t.as_str()).unwrap_or("").to_string();
-            if matches!(kind.as_str(), "overloaded_error" | "rate_limit_error" | "api_error") && attempt < 2 {
-                last = kind;
-                std::thread::sleep(std::time::Duration::from_secs(4 * (attempt + 1) as u64));
-                continue;
-            }
-            return self.parse(&resp);
-        }
-        Err(format!("Anthropic kept failing: {last}"))
+        // Retries 408/429/5xx/529 (overloaded) with backoff.
+        let reply = gemini::post_json_retry(&url, &headers, &body.to_string(), 600, gemini::is_retryable_status)?;
+        let resp = json::parse(&reply.body).map_err(|e| format!("unreadable reply from Anthropic (HTTP {}): {e}: {}", reply.status, head(&reply.body, 300)))?;
+        self.parse(&resp)
+    }
+}
+
+fn ephemeral() -> Json {
+    Json::obj(vec![("type", Json::str("ephemeral"))])
+}
+
+fn head(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
+/// Append `blocks` to the last message when it has the same role, else start one.
+fn push_blocks<'a>(messages: &mut Vec<(&'a str, Vec<Json>)>, role: &'a str, blocks: Vec<Json>) {
+    match messages.last_mut() {
+        Some((r, b)) if *r == role => b.extend(blocks),
+        _ => messages.push((role, blocks)),
     }
 }
 
@@ -423,7 +463,13 @@ impl OpenAiCompat {
                         ])
                     })
                     .collect();
-                let mut m = vec![("role", Json::str("assistant")), ("content", if text.is_empty() { Json::Null } else { Json::str(text) })];
+                // A turn with neither text nor calls is not replayed, and one
+                // with calls only sends "" rather than null (several
+                // OpenAI-compatible servers reject a null content).
+                if text.trim().is_empty() && calls.is_empty() {
+                    continue;
+                }
+                let mut m = vec![("role", Json::str("assistant")), ("content", Json::str(text))];
                 if !calls.is_empty() {
                     m.push(("tool_calls", Json::Arr(calls)));
                 }
@@ -473,7 +519,7 @@ impl OpenAiCompat {
         if let Some(u) = resp.get("usage") {
             self.last_usage = Some((u.u64_of("prompt_tokens", 0), u.u64_of("completion_tokens", 0)));
         }
-        let msg = resp.path(&["choices", "0", "message"]).cloned().ok_or_else(|| format!("{}/{}: reply without choices: {}", self.provider, self.model, &resp.to_string()[..resp.to_string().len().min(300)]))?;
+        let msg = resp.path(&["choices", "0", "message"]).cloned().ok_or_else(|| format!("{}/{}: reply without choices: {}", self.provider, self.model, head(&resp.to_string(), 300)))?;
         let mut parts: Vec<Json> = Vec::new();
         if let Some(t) = msg.get("content").and_then(|t| t.as_str()) {
             if !t.trim().is_empty() {
@@ -483,8 +529,22 @@ impl OpenAiCompat {
         for c in msg.get("tool_calls").and_then(|c| c.as_arr()).cloned().unwrap_or_default() {
             let f = c.get("function").cloned().unwrap_or(Json::Null);
             let raw = f.str_of("arguments");
-            let args = if raw.trim().is_empty() { Json::Obj(vec![]) } else { json::parse(&raw).or_else(|_| json::parse_loose(&raw)).unwrap_or(Json::Obj(vec![])) };
-            parts.push(Json::obj(vec![("functionCall", Json::obj(vec![("id", Json::str(c.str_of("id"))), ("name", Json::str(f.str_of("name"))), ("args", args)]))]));
+            // Arguments that do not parse to an object are flagged, not run
+            // with `{}`: the agent answers the call with an error instead.
+            let parsed = if raw.trim().is_empty() { Ok(Json::Obj(vec![])) } else { json::parse(&raw).or_else(|_| json::parse_loose(&raw)) };
+            let mut call = vec![("id", Json::str(c.str_of("id"))), ("name", Json::str(f.str_of("name")))];
+            match parsed {
+                Ok(args @ Json::Obj(_)) => call.push(("args", args)),
+                Ok(_) => {
+                    call.push(("args", Json::Obj(vec![])));
+                    call.push(("argsError", Json::str(format!("arguments must be a JSON object, got: {}", head(&raw, 200)))));
+                }
+                Err(e) => {
+                    call.push(("args", Json::Obj(vec![])));
+                    call.push(("argsError", Json::str(format!("arguments are not valid JSON ({e}): {}", head(&raw, 200)))));
+                }
+            }
+            parts.push(Json::obj(vec![("functionCall", Json::obj(call))]));
         }
         Ok(Json::obj(vec![("role", Json::str("model")), ("parts", Json::Arr(parts)), ("provider", Json::str(self.provider.as_str()))]))
     }
@@ -510,19 +570,9 @@ impl Model for OpenAiCompat {
         if self.provider == "openrouter" {
             headers.push(("X-Title", "polinrider-hunter"));
         }
-        let mut last = String::new();
-        for attempt in 0..3 {
-            let text = gemini::http_post_json_timeout(&url, &headers, &body.to_string(), 600)?;
-            let resp = json::parse(&text).map_err(|e| format!("unreadable reply from {}: {e}: {}", self.provider, &text[..text.len().min(300)]))?;
-            let code = resp.path(&["error", "code"]).map(|c| c.to_string()).unwrap_or_default();
-            if (code.contains("429") || code.contains("rate") || code.contains("503")) && attempt < 2 {
-                last = code;
-                std::thread::sleep(std::time::Duration::from_secs(4 * (attempt + 1) as u64));
-                continue;
-            }
-            return self.parse(&resp);
-        }
-        Err(format!("{} kept failing: {last}", self.provider))
+        let reply = gemini::post_json_retry(&url, &headers, &body.to_string(), 600, gemini::is_retryable_status)?;
+        let resp = json::parse(&reply.body).map_err(|e| format!("unreadable reply from {} (HTTP {}): {e}: {}", self.provider, reply.status, head(&reply.body, 300)))?;
+        self.parse(&resp)
     }
 }
 
@@ -606,5 +656,91 @@ mod tests {
         assert!(provider("Anthropic").is_some());
         assert!(provider("nope").is_none());
         assert_eq!(mask("sk-ant-abcdefghijklmnop"), "sk-ant…mnop");
+    }
+
+    fn fcall(id: &str, name: &str) -> Json {
+        Json::obj(vec![("functionCall", Json::obj(vec![("id", Json::str(id)), ("name", Json::str(name)), ("args", Json::obj(vec![]))]))])
+    }
+    fn fresp(id: &str, name: &str, ok: bool) -> Json {
+        Json::obj(vec![("functionResponse", Json::obj(vec![("id", Json::str(id)), ("name", Json::str(name)), ("response", Json::obj(vec![("ok", Json::Bool(ok))]))]))])
+    }
+    fn turn(role: &str, parts: Vec<Json>) -> Json {
+        Json::obj(vec![("role", Json::str(role)), ("parts", Json::Arr(parts))])
+    }
+
+    /// Two parallel calls, their results, then a nudge in a separate user turn.
+    fn parallel_history() -> Vec<Json> {
+        vec![
+            turn("user", vec![Json::obj(vec![("text", Json::str("go"))])]),
+            turn("model", vec![fcall("t1", "scan"), fcall("t2", "finish")]),
+            turn("user", vec![fresp("t1", "scan", true), fresp("t2", "finish", false)]),
+            turn("user", vec![Json::obj(vec![("text", Json::str("continue"))])]),
+            // An empty model turn (no text, no calls) must not be replayed.
+            Json::obj(vec![("role", Json::str("model")), ("provider", Json::str("anthropic")), ("raw", Json::arr(vec![])), ("parts", Json::arr(vec![]))]),
+            turn("user", vec![Json::obj(vec![("text", Json::str("and now?"))])]),
+        ]
+    }
+
+    #[test]
+    fn anthropic_body_is_standard_cached_and_grouped() {
+        let a = Anthropic::new("k", ANTHROPIC_DEFAULT_MODEL, "");
+        let b = a.body("sys", &parallel_history(), &tools());
+        let msgs = b.get("messages").unwrap().as_arr().unwrap();
+        // user, assistant, user (both results + both texts, merged)
+        assert_eq!(msgs.len(), 3, "{}", b.to_string());
+        assert_eq!(msgs[2].str_of("role"), "user");
+        let blocks = msgs[2].get("content").unwrap().as_arr().unwrap();
+        assert_eq!(blocks[0].str_of("type"), "tool_result");
+        assert_eq!(blocks[1].str_of("type"), "tool_result");
+        assert_eq!(blocks[1].str_of("tool_use_id"), "t2");
+        assert_eq!(blocks[1].get("is_error").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(blocks[2].str_of("type"), "text");
+        // No empty content array anywhere.
+        assert!(msgs.iter().all(|m| !m.get("content").unwrap().as_arr().unwrap().is_empty()));
+        // Prompt caching on the system prompt and the last tool.
+        assert_eq!(b.path(&["system", "0", "cache_control", "type"]).and_then(|v| v.as_str()), Some("ephemeral"));
+        assert_eq!(b.path(&["tools", "0", "cache_control", "type"]).and_then(|v| v.as_str()), Some("ephemeral"));
+        // Standard fields only: no refusal fallback, adaptive thinking, explicit effort.
+        assert!(b.get("fallbacks").is_none());
+        assert_eq!(b.path(&["thinking", "type"]).and_then(|v| v.as_str()), Some("adaptive"));
+        assert_eq!(b.path(&["output_config", "effort"]).and_then(|v| v.as_str()), Some("high"));
+        assert_eq!(b.path(&["tool_choice", "type"]).and_then(|v| v.as_str()), Some("auto"));
+    }
+
+    #[test]
+    fn anthropic_honours_any_custom_base_url() {
+        assert_eq!(Anthropic::new("k", "m", "").base, "https://api.anthropic.com");
+        assert_eq!(Anthropic::new("k", "m", "https://llm-gateway.corp.example/").base, "https://llm-gateway.corp.example");
+        assert_eq!(Anthropic::new("k", "m", "http://localhost:4000/v1").base, "http://localhost:4000");
+    }
+
+    #[test]
+    fn openai_body_never_sends_null_content_and_keeps_tool_ids() {
+        let o = OpenAiCompat::new("openai", "k", "gpt-4.1", "https://api.openai.com/v1");
+        let b = o.body("sys", &parallel_history(), &tools());
+        let msgs = b.get("messages").unwrap().as_arr().unwrap();
+        assert!(msgs.iter().all(|m| m.get("content").map(|c| *c != Json::Null).unwrap_or(false)), "{}", b.to_string());
+        let assistants: Vec<&Json> = msgs.iter().filter(|m| m.str_of("role") == "assistant").collect();
+        assert_eq!(assistants.len(), 1, "the empty model turn is skipped");
+        assert_eq!(assistants[0].str_of("content"), "");
+        let tool_msgs: Vec<&Json> = msgs.iter().filter(|m| m.str_of("role") == "tool").collect();
+        assert_eq!(tool_msgs.iter().map(|m| m.str_of("tool_call_id")).collect::<Vec<_>>(), vec!["t1", "t2"]);
+    }
+
+    #[test]
+    fn unparseable_tool_arguments_are_flagged_not_run_empty() {
+        let mut o = OpenAiCompat::new("groq", "k", "m", "https://x/v1");
+        let resp = json::parse(r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"run_command","arguments":"{\"command\": \"dir"}},{"id":"c2","type":"function","function":{"name":"scan","arguments":"[1,2]"}},{"id":"c3","type":"function","function":{"name":"scan","arguments":""}}]}}]}"#).unwrap();
+        let t = o.parse(&resp).unwrap();
+        assert!(t.path(&["parts", "0", "functionCall", "argsError"]).is_some());
+        assert!(t.path(&["parts", "1", "functionCall", "argsError"]).is_some());
+        assert!(t.path(&["parts", "2", "functionCall", "argsError"]).is_none(), "no arguments is an empty object");
+    }
+
+    #[test]
+    fn masking_never_panics_on_odd_keys() {
+        assert_eq!(mask("ключ-0123456789-абвг"), "ключ-0…абвг");
+        assert_eq!(mask("short"), "*****");
+        assert_eq!(mask(""), "");
     }
 }

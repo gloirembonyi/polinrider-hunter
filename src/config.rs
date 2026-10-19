@@ -245,7 +245,74 @@ impl Config {
             if !self.agent_mode.is_empty() { s.push_str(&format!("agent_mode = {}\n", self.agent_mode)); }
             for (id, k) in &self.ai_keys { s.push_str(&format!("{id}_key = {k}\n")); }
         }
-        std::fs::write(config_path(), s)
+        write_private(&config_path(), s.as_bytes())
+    }
+}
+
+/// Write a file only its owner can read: it holds API keys.
+///
+/// Unix: created 0600 and chmod-ed 0600 (an older file may have been 0644).
+/// Windows: the per-user state directory is already private to the user, but
+/// an inherited ACL can be wider (a home on a shared drive, an admin-created
+/// folder), so inheritance is cut and only the current user is granted access.
+/// Best effort: a failed `icacls` never fails the save.
+pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        f.write_all(bytes)?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, bytes)?;
+        #[cfg(windows)]
+        restrict_acl(path);
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn restrict_acl(path: &Path) {
+    let user = std::env::var("USERNAME").unwrap_or_default();
+    if user.trim().is_empty() {
+        return;
+    }
+    let who = match std::env::var("USERDOMAIN") {
+        Ok(d) if !d.trim().is_empty() => format!("{d}\\{user}"),
+        _ => user,
+    };
+    let p = path.to_string_lossy().to_string();
+    let _ = crate::util::run("icacls", &[&p, "/inheritance:r", "/grant:r", &format!("{who}:F")]);
+}
+
+/// Read a secret from the terminal without it landing in shell history.
+///
+/// On Unix echo is turned off with `stty -echo` while the key is typed (and
+/// back on afterwards, whatever happens). Windows' console has no std-only way
+/// to hide input, so the key is read visibly and the caller says so; it still
+/// never reaches the shell's history, which is the point.
+pub fn read_secret(prompt: &str) -> Option<String> {
+    use std::io::{BufRead, IsTerminal, Write};
+    let tty = std::io::stdin().is_terminal();
+    print!("{prompt}");
+    let _ = std::io::stdout().flush();
+    #[cfg(unix)]
+    let hidden = tty && std::process::Command::new("stty").arg("-echo").stdin(std::process::Stdio::inherit()).status().map(|s| s.success()).unwrap_or(false);
+    let mut s = String::new();
+    let got = std::io::stdin().lock().read_line(&mut s);
+    #[cfg(unix)]
+    if hidden {
+        let _ = std::process::Command::new("stty").arg("echo").stdin(std::process::Stdio::inherit()).status();
+        println!();
+    }
+    let _ = tty;
+    match got {
+        Ok(0) | Err(_) => None,
+        Ok(_) => Some(s.trim().to_string()).filter(|k| !k.is_empty()),
     }
 }
 
@@ -377,5 +444,19 @@ mod tests {
         std::env::set_var("POLINRIDER_HOME", "/tmp/pr-test-home");
         assert_eq!(home(), PathBuf::from("/tmp/pr-test-home"));
         std::env::remove_var("POLINRIDER_HOME");
+    }
+
+    #[test]
+    fn private_files_are_written_owner_only() {
+        let p = std::env::temp_dir().join(format!("prh-private-{}.txt", std::process::id()));
+        std::fs::write(&p, "old").unwrap();
+        write_private(&p, b"gemini_key = fake-key-for-test\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "gemini_key = fake-key-for-test\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_file(&p);
     }
 }
