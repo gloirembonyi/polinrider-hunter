@@ -1168,6 +1168,7 @@ pub fn scan_tree(root: &Path, quick: bool) -> Vec<Finding> {
 pub fn scan_tree_cb(root: &Path, quick: bool, on_finding: &mut dyn FnMut(Finding)) {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
+        progress::enter(&dir);
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -1195,12 +1196,49 @@ pub fn scan_tree_cb(root: &Path, quick: bool, on_finding: &mut dyn FnMut(Finding
                     has_scannable_ext(&path) || is_config_target(&path)
                 };
                 if interesting {
+                    progress::file();
                     if let Some(f) = scan_file(&path) {
                         on_finding(f);
                     }
                 }
             }
         }
+    }
+}
+
+/// Where a long walk has got to, for a status line.
+///
+/// A machine-wide hunt can spend ten silent minutes inside one directory (a
+/// `.claude` full of transcripts, an Android SDK). Silence reads as "it is
+/// waiting for me to type something", and people did - so the walk records
+/// where it is and how much it has read, and `hunt` shows that on a live line.
+/// Two relaxed atomics and a mutex taken once per directory: nothing a sweep
+/// would notice.
+pub mod progress {
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    static FILES: AtomicUsize = AtomicUsize::new(0);
+    static DIRS: AtomicUsize = AtomicUsize::new(0);
+    static CURRENT: Mutex<String> = Mutex::new(String::new());
+
+    pub fn enter(dir: &Path) {
+        DIRS.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut c) = CURRENT.lock() {
+            c.clear();
+            c.push_str(&dir.to_string_lossy());
+        }
+    }
+
+    pub fn file() {
+        FILES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// `(files read, directories entered, directory being read now)`.
+    pub fn snapshot() -> (usize, usize, String) {
+        let cur = CURRENT.lock().map(|c| c.clone()).unwrap_or_default();
+        (FILES.load(Ordering::Relaxed), DIRS.load(Ordering::Relaxed), cur)
     }
 }
 

@@ -18,6 +18,15 @@ use util::{BOLD, DIM, GREEN, RED, RESET, YELLOW};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// `println!` that first wipes the live status line (see `util::status`), so a
+/// finding printed mid-sweep does not land on top of "still scanning ...".
+macro_rules! sayln {
+    ($($t:tt)*) => {{
+        let _g = util::status::clear();
+        println!($($t)*);
+    }};
+}
+
 struct Args {
     cmd: String,
     positional: Vec<String>,
@@ -211,17 +220,34 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
     service::lower_priority();
 
     if !json {
-        println!("{}", util::c(BOLD, "PolinRider hunt"));
+        sayln!("{}", util::c(BOLD, "PolinRider hunt"));
         for r in &roots {
-            println!("  searching {}", r.display());
+            sayln!("  searching {}", r.display());
         }
         if !all_drives {
-            println!(
+            sayln!(
                 "{}",
                 util::c(DIM, "  (add --drives to include every drive on the machine)")
             );
         }
-        println!();
+        sayln!(
+            "{}",
+            util::c(DIM, "  This takes several minutes and needs no input - the line at the bottom shows where it is. Ctrl+C stops it.")
+        );
+        sayln!();
+        // Silence for minutes reads as "it wants me to type something" - it was
+        // reported exactly like that. Keep a live line showing where the walk is.
+        util::status::start(|elapsed| {
+            let (files, _dirs, cur) = scanner::progress::snapshot();
+            let secs = elapsed.as_secs();
+            format!(
+                "  working {}m{:02}s  ·  {} files read  ·  {}",
+                secs / 60,
+                secs % 60,
+                files,
+                if cur.is_empty() { "starting".to_string() } else { cur }
+            )
+        });
     }
 
     // 1. Anything running right now. Do this first: a live loader can re-drop a
@@ -251,9 +277,9 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
             continue;
         }
         match action {
-            "would stop" => println!("  {} pid {} ({})", util::c(YELLOW, "would stop"), s.pid, s.marker),
-            "stopped" => println!("  {} pid {} ({})", util::c(GREEN, "stopped loader"), s.pid, s.marker),
-            _ => println!("  {} pid {}", util::c(RED, "could not stop"), s.pid),
+            "would stop" => sayln!("  {} pid {} ({})", util::c(YELLOW, "would stop"), s.pid, s.marker),
+            "stopped" => sayln!("  {} pid {} ({})", util::c(GREEN, "stopped loader"), s.pid, s.marker),
+            _ => sayln!("  {} pid {}", util::c(RED, "could not stop"), s.pid),
         }
     }
 
@@ -262,13 +288,13 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
     let persist_hits = persist::check();
     if !json {
         for h in &persist_hits {
-            println!(
+            sayln!(
                 "  {} {}:{}",
                 util::c(YELLOW, "startup "),
                 h.location,
                 h.line_no
             );
-            println!("      {}", util::c(DIM, h.why));
+            sayln!("      {}", util::c(DIM, h.why));
         }
     }
 
@@ -291,8 +317,8 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
         }
         if !json {
             let verb = if dry { "would remove" } else if a.removed { "removed  " } else { "FAILED   " };
-            println!("  {} {} {}", util::c(GREEN, verb), a.kind, a.name);
-            println!("      {}", util::c(DIM, &a.target));
+            sayln!("  {} {} {}", util::c(GREEN, verb), a.kind, a.name);
+            sayln!("      {}", util::c(DIM, &a.target));
         }
     }
 
@@ -321,12 +347,12 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
                 // demand with no information in it: the first question anybody
                 // asks is what was seen, and the answer is right here.
                 let iocs: Vec<&str> = f.hits.iter().map(|h| h.ioc).collect();
-                println!(
+                sayln!(
                     "  {} {}",
                     util::c(YELLOW, "review  "),
                     f.path.display()
                 );
-                println!("      {}", util::c(DIM, &iocs.join(", ")));
+                sayln!("      {}", util::c(DIM, &iocs.join(", ")));
             }
             return;
         }
@@ -352,12 +378,12 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
         }
         if !json {
             let iocs: Vec<&str> = f.hits.iter().map(|h| h.ioc).collect();
-            println!(
+            sayln!(
                 "  {} {}",
                 util::c(GREEN, &outcome.label()),
                 f.path.display()
             );
-            println!("      {}", util::c(DIM, &iocs.join(", ")));
+            sayln!("      {}", util::c(DIM, &iocs.join(", ")));
         }
     };
 
@@ -378,11 +404,11 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
         subdirs.sort();
         // Files sitting directly in the root, plus each subtree in turn.
         if !json {
-            println!("{}", util::c(DIM, &format!("  [{}]", root.display())));
+            sayln!("{}", util::c(DIM, &format!("  [{}]", root.display())));
         }
         for d in subdirs {
             if !json {
-                println!("{}", util::c(DIM, &format!("    scanning {}", d.display())));
+                sayln!("{}", util::c(DIM, &format!("    scanning {}", d.display())));
             }
             scanner::scan_tree_cb(&d, false, &mut handle);
         }
@@ -393,7 +419,7 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
     //    Microsoft\CLR_v4.0 stage, the npm loader's drop dirs, package caches).
     //    Small and specific, scanned last.
     if !json {
-        println!("{}", util::c(DIM, "    scanning known hideouts and package caches"));
+        sayln!("{}", util::c(DIM, "    scanning known hideouts and package caches"));
     }
     scanner::scan_hideouts_cb(&mut handle);
     drop(handle);
@@ -405,7 +431,7 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
             if json {
                 j_cleaned.push(format!("{{\"path\":\"{}\",\"outcome\":\"would remove package directory\",\"indicators\":[\"malicious-npm-package\"]}}", util::json_escape(&dir.to_string_lossy())));
             } else {
-                println!("  {} {}", util::c(YELLOW, "would remove"), dir.display());
+                sayln!("  {} {}", util::c(YELLOW, "would remove"), dir.display());
             }
             continue;
         }
@@ -421,14 +447,14 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
         if !json {
             let colour = if ok { GREEN } else { RED };
             let verb = if ok { "removed  " } else { "FAILED   " };
-            println!("  {} {}", util::c(colour, verb), dir.display());
+            sayln!("  {} {}", util::c(colour, verb), dir.display());
         }
     }
 
     // 5. Every repository's own git config: an injected core.fsmonitor or a
     //    hook that fetches and runs code survives a perfectly clean work tree.
     if !json {
-        println!("{}", util::c(DIM, "    auditing git configuration of every repository"));
+        sayln!("{}", util::c(DIM, "    auditing git configuration of every repository"));
     }
     let cfg_hits = audit_repo_configs(&roots);
     let mut cfg_fixed = 0usize;
@@ -450,7 +476,7 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
     for c in &clickfix {
         manual.push(format!("Run-dialog history holds a fetch-and-execute command (ClickFix): {c}"));
         if !json {
-            println!("  {} {}", util::c(YELLOW, "clickfix "), c);
+            sayln!("  {} {}", util::c(YELLOW, "clickfix "), c);
         }
     }
 
@@ -460,7 +486,7 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
             .iter()
             .map(|h| format!("{{\"location\":\"{}\",\"line\":{},\"why\":\"{}\"}}", util::json_escape(&h.location), h.line_no, util::json_escape(h.why)))
             .collect();
-        println!(
+        sayln!(
             "{{\"dry\":{dry},\"healed\":{healed},\"found\":{found},\"needs_review\":{noted},\"persistence_removed\":{persist_removed},\"manual\":{},\
              \"processes\":[{}],\"persistence\":[{}],\"startup_review\":[{}],\"cleaned\":[{}],\"review\":[{}],\"clickfix\":[{}],\"manual_items\":[{}],\"quarantine\":\"{}\"}}",
             manual.len(),
@@ -476,8 +502,9 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
         return if manual.is_empty() { 0 } else { 1 };
     }
 
-    println!();
-    println!(
+    util::status::stop();
+    sayln!();
+    sayln!(
         "{} {} loader process(es) stopped, {} persistence entr(y/ies) removed, {} of {} finding(s) cleaned, {} need a look",
         util::c(BOLD, "hunt complete:"),
         killed,
@@ -487,15 +514,15 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
         manual.len() + noted + persist_hits.len()
     );
     if noted > 0 {
-        println!();
-        println!(
+        sayln!();
+        sayln!(
             "{}",
             util::c(
                 BOLD,
                 &format!("  {noted} file(s) marked \"review\" - nothing was changed in them")
             )
         );
-        println!(
+        sayln!(
             "{}",
             util::c(
                 DIM,
@@ -504,7 +531,7 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
         );
     }
     if !persist_hits.is_empty() {
-        println!(
+        sayln!(
             "{}",
             util::c(
                 YELLOW,
@@ -516,20 +543,20 @@ fn cmd_hunt(args: &Args, json: bool) -> i32 {
         );
     }
     if !manual.is_empty() {
-        println!("\n{}", util::c(YELLOW, "clean these by hand:"));
+        sayln!("\n{}", util::c(YELLOW, "clean these by hand:"));
         for m in &manual {
-            println!("  {m}");
+            sayln!("  {m}");
         }
     }
     if healed > 0 && !dry {
-        println!(
+        sayln!(
             "{}",
             util::c(
                 DIM,
                 &format!("originals kept in {}", config::quarantine_dir().display())
             )
         );
-        println!(
+        sayln!(
             "{}",
             util::c(
                 DIM,
@@ -597,18 +624,36 @@ fn prompt_key(label: &str) -> Option<String> {
         let _ = std::io::stdin().read_line(&mut s);
         return Some(s.trim().to_string()).filter(|k| !k.is_empty());
     }
-    if cfg!(windows) {
-        println!("{}", util::c(DIM, "(the key is visible while you paste it, but it is not stored in your shell history)"));
-    }
-    config::read_secret(&format!("paste your {label} key: "))
+    println!(
+        "{}",
+        util::c(DIM, "  Paste the key and press Enter. Typing is hidden, so nothing appears while you paste - that is expected. Right-click or Ctrl+Shift+V pastes in most terminals.")
+    );
+    config::read_secret(&format!("  {label} key: "))
 }
 
 fn build_model(args: &Args, cfg: &Config) -> Result<Box<dyn gemini::Model>, String> {
+    use std::io::IsTerminal;
     let mut cfg = cfg.clone();
     if args.key.is_some() {
         warn_key_on_command_line();
     }
-    let Some(provider) = llm::resolve_provider(args.provider.as_deref(), &cfg) else {
+    let mut provider = llm::resolve_provider(args.provider.as_deref(), &cfg);
+    // First run with nobody's key yet: set one up here, the way an installer
+    // would, instead of printing a list of commands and quitting. Only when a
+    // person is at the keyboard - a pipe or CI still gets the explanation.
+    if provider.is_none() && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        println!("{}", util::c(BOLD, "No AI provider is set up yet - let's add one now (Ctrl+C to cancel)."));
+        println!(
+            "{}",
+            util::c(DIM, "  Gemini has a free tier. No key at all? Use the hunter from Claude Code, Cursor or Codex instead: polinrider-hunter mcp")
+        );
+        println!();
+        if ai_setup(cfg.clone()) == 0 {
+            cfg = Config::load();
+            provider = llm::resolve_provider(args.provider.as_deref(), &cfg);
+        }
+    }
+    let Some(provider) = provider else {
         return Err(no_key_help());
     };
     if let Some(b) = &args.base_url {
@@ -817,22 +862,33 @@ fn ai_setup(mut cfg: Config) -> i32 {
         }
     };
     println!("{}", util::c(BOLD, "Set up the AI agent"));
+    let default = llm::PROVIDERS.iter().position(|p| p.id == "gemini").unwrap_or(0);
     for (i, p) in llm::PROVIDERS.iter().enumerate() {
-        println!("  {}. {:<11} {}", i + 1, p.id, p.label);
+        let mark = if i == default { util::c(GREEN, "  <- default") } else { String::new() };
+        println!("  {:>2}. {:<11} {}{}", i + 1, p.id, p.label, mark);
     }
-    let Some(choice) = read("provider (number or name): ") else { return 2 };
-    let p = choice.parse::<usize>().ok().and_then(|n| llm::PROVIDERS.get(n.wrapping_sub(1))).or_else(|| llm::provider(&choice));
-    let Some(p) = p else {
-        eprintln!("unknown provider `{choice}`");
-        return 2;
+    // Ask until the answer is usable: quitting on a typo throws away a setup the
+    // user has just started.
+    let p = loop {
+        let Some(choice) = read(&format!("provider [number or name, Enter = {}]: ", llm::PROVIDERS[default].id)) else { return 2 };
+        let choice = choice.trim().to_string();
+        let pick = if choice.is_empty() {
+            llm::PROVIDERS.get(default)
+        } else {
+            choice.parse::<usize>().ok().and_then(|n| llm::PROVIDERS.get(n.wrapping_sub(1))).or_else(|| llm::provider(&choice))
+        };
+        match pick {
+            Some(p) => break p,
+            None => println!("  {} `{choice}` is not one of the numbers or names above", util::c(YELLOW, "?")),
+        }
     };
+    println!("  {} {}", util::c(GREEN, "->"), p.label);
     if p.needs_key {
         println!("  get a key at {}", util::c(BOLD, p.key_url));
-        let Some(key) = prompt_key(p.label) else { return 2 };
-        if key.is_empty() {
-            eprintln!("no key entered");
+        let Some(key) = prompt_key(p.label) else {
+            eprintln!("no key entered - run `polinrider-hunter ai setup` again when you have one");
             return 2;
-        }
+        };
         cfg.set_ai_key(p.id, &key);
     }
     if p.id == "custom" || p.id == "ollama" {
@@ -846,13 +902,30 @@ fn ai_setup(mut cfg: Config) -> i32 {
     if save_cfg(&cfg, &format!("{} configured", p.id)) != 0 {
         return 1;
     }
-    println!("{}", util::c(DIM, "testing the connection..."));
     let args = Args { cmd: "ai".into(), positional: vec!["test".into()], flags: vec![], interval: None, port: None, key: None, model: None, task: None, max_steps: None, vt_key: None, provider: None, mode: None, base_url: None, urls: Vec::new(), skip_remotes: None };
-    let code = cmd_ai(&args, Config::load());
-    if code == 0 {
-        println!("{}", util::c(GREEN, "ready - start with: polinrider-hunter agent"));
+    // A mistyped or truncated paste is the usual failure: offer another go
+    // rather than leaving a broken key saved.
+    for attempt in 0..3 {
+        println!("{}", util::c(DIM, "testing the connection..."));
+        let code = cmd_ai(&args, Config::load());
+        if code == 0 {
+            println!("{}", util::c(GREEN, "ready - start with: polinrider-hunter agent"));
+            return 0;
+        }
+        if !p.needs_key || attempt == 2 {
+            return code;
+        }
+        let again = read("the test failed - paste a different key? [Y/n]: ").unwrap_or_default();
+        if again.eq_ignore_ascii_case("n") || again.eq_ignore_ascii_case("no") {
+            return code;
+        }
+        let Some(key) = prompt_key(p.label) else { return code };
+        cfg.set_ai_key(p.id, &key);
+        if save_cfg(&cfg, &format!("{} key updated", p.id)) != 0 {
+            return 1;
+        }
     }
-    code
+    1
 }
 
 fn cmd_agent(args: &Args, cfg: Config) -> i32 {

@@ -291,29 +291,51 @@ fn restrict_acl(path: &Path) {
 
 /// Read a secret from the terminal without it landing in shell history.
 ///
-/// On Unix echo is turned off with `stty -echo` while the key is typed (and
-/// back on afterwards, whatever happens). Windows' console has no std-only way
-/// to hide input, so the key is read visibly and the caller says so; it still
-/// never reaches the shell's history, which is the point.
+/// Typing is hidden on Windows, macOS and Linux (console echo off, restored
+/// afterwards whatever happens), and the prompt says so - a prompt that shows
+/// nothing as you paste looks broken unless it tells you. After the read it
+/// confirms how many characters arrived, which is how you know a paste worked
+/// without the key appearing on screen. An empty line asks again (up to three
+/// times) instead of silently giving up. Piped input (`echo $KEY | ...`) is read
+/// as-is with no prompt dance.
 pub fn read_secret(prompt: &str) -> Option<String> {
     use std::io::{BufRead, IsTerminal, Write};
-    let tty = std::io::stdin().is_terminal();
-    print!("{prompt}");
-    let _ = std::io::stdout().flush();
-    #[cfg(unix)]
-    let hidden = tty && std::process::Command::new("stty").arg("-echo").stdin(std::process::Stdio::inherit()).status().map(|s| s.success()).unwrap_or(false);
-    let mut s = String::new();
-    let got = std::io::stdin().lock().read_line(&mut s);
-    #[cfg(unix)]
-    if hidden {
-        let _ = std::process::Command::new("stty").arg("echo").stdin(std::process::Stdio::inherit()).status();
-        println!();
+    let read = || {
+        let mut s = String::new();
+        match std::io::stdin().lock().read_line(&mut s) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => Some(s.trim().trim_matches('"').trim_matches('\'').to_string()),
+        }
+    };
+    if !std::io::stdin().is_terminal() {
+        return read().filter(|k| !k.is_empty());
     }
-    let _ = tty;
-    match got {
-        Ok(0) | Err(_) => None,
-        Ok(_) => Some(s.trim().to_string()).filter(|k| !k.is_empty()),
+    for attempt in 0..3 {
+        print!("{prompt}");
+        let _ = std::io::stdout().flush();
+        let (got, hidden) = crate::util::console::without_echo(read);
+        if hidden {
+            println!();
+        }
+        match got {
+            None => return None, // end of input (Ctrl+Z / Ctrl+D): the user left
+            Some(k) if !k.is_empty() => {
+                if hidden {
+                    println!("  received {} characters (hidden)", k.chars().count());
+                }
+                return Some(k);
+            }
+            Some(_) if attempt < 2 => println!("  nothing was entered - paste the key and press Enter (Ctrl+C to cancel)"),
+            Some(_) => {}
+        }
     }
+    None
+}
+
+/// Whether `read_secret` can hide typing here (an interactive console).
+pub fn secret_input_is_hidden() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
 }
 
 fn parse_bool(v: &str, default: bool) -> bool {

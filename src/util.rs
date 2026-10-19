@@ -54,7 +54,12 @@ pub fn c(colour: &str, s: &str) -> String {
 pub fn enable_ansi() {
     #[cfg(windows)]
     {
-        let modern = std::env::var("WT_SESSION").is_ok()
+        // Ask the console for escape-sequence support directly (Windows 10+).
+        // Guessing from environment variables left plain PowerShell and cmd
+        // windows colourless, and - worse - unable to redraw a status line.
+        let vt = console::enable_vt();
+        let modern = vt
+            || std::env::var("WT_SESSION").is_ok()
             || std::env::var("TERM_PROGRAM").is_ok()
             || std::env::var("ConEmuANSI").map(|v| v == "ON").unwrap_or(false)
             || std::env::var("TERM").is_ok();
@@ -62,6 +67,168 @@ pub fn enable_ansi() {
             set_colour(false);
         }
     }
+}
+
+/// The few console calls std does not offer: escape-sequence processing and
+/// echo-free input on Windows. Declared by hand against kernel32 so the binary
+/// keeps its zero-dependency promise.
+pub mod console {
+    #[cfg(windows)]
+    mod win {
+        pub type Handle = *mut core::ffi::c_void;
+        pub const STD_INPUT: u32 = -10i32 as u32;
+        pub const STD_OUTPUT: u32 = -11i32 as u32;
+        pub const STD_ERROR: u32 = -12i32 as u32;
+        pub const ENABLE_ECHO_INPUT: u32 = 0x0004;
+        pub const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
+        #[link(name = "kernel32")]
+        extern "system" {
+            pub fn GetStdHandle(which: u32) -> Handle;
+            pub fn GetConsoleMode(h: Handle, mode: *mut u32) -> i32;
+            pub fn SetConsoleMode(h: Handle, mode: u32) -> i32;
+        }
+        /// The handle's console mode, or None when it is not a console.
+        pub fn mode(which: u32) -> Option<(Handle, u32)> {
+            unsafe {
+                let h = GetStdHandle(which);
+                if h.is_null() || h as isize == -1 {
+                    return None;
+                }
+                let mut m = 0u32;
+                (GetConsoleMode(h, &mut m) != 0).then_some((h, m))
+            }
+        }
+    }
+
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static VT: AtomicBool = AtomicBool::new(false);
+
+    /// Turn on escape-sequence processing for stdout and stderr. True when the
+    /// terminal can now redraw a line in place.
+    pub fn enable_vt() -> bool {
+        #[cfg(windows)]
+        {
+            let mut ok = false;
+            for which in [win::STD_OUTPUT, win::STD_ERROR] {
+                if let Some((h, m)) = win::mode(which) {
+                    let want = m | win::ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+                    ok |= unsafe { win::SetConsoleMode(h, want) } != 0;
+                }
+            }
+            VT.store(ok, Ordering::Relaxed);
+            ok
+        }
+        #[cfg(not(windows))]
+        {
+            let ok = std::env::var("TERM").map(|t| t != "dumb").unwrap_or(false);
+            VT.store(ok, Ordering::Relaxed);
+            ok
+        }
+    }
+
+    /// Escape sequences work on this terminal (after `enable_vt`).
+    pub fn vt() -> bool {
+        VT.load(Ordering::Relaxed)
+    }
+
+    /// Run `f` with keyboard echo switched off, restoring it afterwards even if
+    /// `f` fails. Returns whether echo was actually hidden.
+    pub fn without_echo<T>(f: impl FnOnce() -> T) -> (T, bool) {
+        #[cfg(windows)]
+        {
+            if let Some((h, m)) = win::mode(win::STD_INPUT) {
+                let hidden = unsafe { win::SetConsoleMode(h, m & !win::ENABLE_ECHO_INPUT) } != 0;
+                let out = f();
+                unsafe { win::SetConsoleMode(h, m) };
+                return (out, hidden);
+            }
+            (f(), false)
+        }
+        #[cfg(unix)]
+        {
+            use std::process::{Command, Stdio};
+            let hidden = Command::new("stty").arg("-echo").stdin(Stdio::inherit()).status().map(|s| s.success()).unwrap_or(false);
+            let out = f();
+            if hidden {
+                let _ = Command::new("stty").arg("echo").stdin(Stdio::inherit()).status();
+            }
+            (out, hidden)
+        }
+        #[cfg(not(any(windows, unix)))]
+        {
+            (f(), false)
+        }
+    }
+}
+
+/// A one-line "still working" indicator for long runs.
+///
+/// Redrawn in place once a second on stderr. Anything else that prints while it
+/// is active must go through `status::say` (or call `status::clear` first), so
+/// the indicator is wiped before the line and redrawn after it instead of the
+/// two interleaving.
+pub mod status {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    static ACTIVE: AtomicBool = AtomicBool::new(false);
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    /// Start the indicator. `line` builds the text from the elapsed time; it is
+    /// only shown when stderr is a terminal that can redraw a line.
+    pub fn start(line: impl Fn(Duration) -> String + Send + 'static) {
+        use std::io::IsTerminal;
+        if !std::io::stderr().is_terminal() || !super::console::vt() || ACTIVE.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let t0 = Instant::now();
+        std::thread::spawn(move || {
+            while ACTIVE.load(Ordering::SeqCst) {
+                if let Ok(_g) = LOCK.lock() {
+                    if ACTIVE.load(Ordering::SeqCst) {
+                        let mut text = line(t0.elapsed());
+                        let width = super::terminal_width().saturating_sub(1).max(20);
+                        if text.chars().count() > width {
+                            text = text.chars().take(width.saturating_sub(1)).collect::<String>() + "…";
+                        }
+                        let mut e = std::io::stderr();
+                        let _ = write!(e, "\r\x1b[2K{}{}{}", super::DIM, text, super::RESET);
+                        let _ = e.flush();
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(1000));
+            }
+        });
+    }
+
+    /// Wipe the indicator so the next line prints cleanly. Hold the returned
+    /// guard while printing.
+    pub fn clear() -> Option<std::sync::MutexGuard<'static, ()>> {
+        let g = LOCK.lock().ok();
+        if ACTIVE.load(Ordering::SeqCst) {
+            let mut e = std::io::stderr();
+            let _ = write!(e, "\r\x1b[2K");
+            let _ = e.flush();
+        }
+        g
+    }
+
+    /// Stop and wipe the indicator.
+    pub fn stop() {
+        let _g = LOCK.lock();
+        if ACTIVE.swap(false, Ordering::SeqCst) {
+            let mut e = std::io::stderr();
+            let _ = write!(e, "\r\x1b[2K");
+            let _ = e.flush();
+        }
+    }
+}
+
+/// Columns in the terminal, from $COLUMNS when set; 100 otherwise.
+pub fn terminal_width() -> usize {
+    std::env::var("COLUMNS").ok().and_then(|c| c.parse().ok()).unwrap_or(100)
 }
 
 /// Suppress the console window a child process would otherwise flash up.
